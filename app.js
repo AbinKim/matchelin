@@ -42,15 +42,22 @@
     const base = p.rating && p.rating !== 'wish' ? p.rating : 'bib';
     const m = {};
     String(p.years || '').split(/[\s,]+/).forEach(t => {
-      const x = t.match(/^'?(\d{2})(?::(3|2|1|bib))?$/);
+      const x = t.match(/^'?(\d{2})(?::(3|2|1|bib|visit))?$/);
       if (x) m[x[1]] = x[2] || base;
     });
     return Object.keys(m).sort().map(y => ({ y, r: m[y] }));
   }
   const years = p => history(p).map(h => h.y);
-  // 등급은 항상 가장 최근 연도의 등급. 기록이 없으면 가볼곳
-  const withHistory = (p, h) => ({ ...p, years: h.map(x => `${x.y}:${x.r}`).join(' '), rating: h.length ? h[h.length - 1].r : 'wish' });
+  // 등급은 가장 최근에 '받은' 등급 ('방문'만 한 해는 등급을 바꾸지 않음). 기록이 없으면 가볼곳
+  const rated = h => h.filter(x => x.r !== 'visit');
+  function withHistory(p, h) {
+    const r = rated(h);
+    const rating = r.length ? r[r.length - 1].r : h.length ? (p.rating === 'wish' ? 'bib' : p.rating) : 'wish';
+    return { ...p, years: h.map(x => `${x.y}:${x.r}`).join(' '), rating };
+  }
   const RATED = RATINGS.filter(r => r.key !== 'wish');
+  const VISIT = { key: 'visit', label: '👣', short: '방문', desc: '방문만 기록 · 등급은 그대로' };
+  const yearRating = k => k === 'visit' ? VISIT : ratingOf(k);
   const LL = (lat, lng) => new kakao.maps.LatLng(+lat, +lng);
 
   // ─────────────────────────── 저장 · 동기화 ───────────────────────────
@@ -566,8 +573,9 @@
     const r = ratingOf(p.rating), c = categoryOf(p.category), h = history(p);
     const thisYear = h.find(x => x.y === THIS_YEAR);
     let trend = '';
-    if (h.length >= 2) {
-      const d = RATING_ORDER[h[h.length - 2].r] - RATING_ORDER[h[h.length - 1].r];
+    const hr = rated(h);
+    if (hr.length >= 2) {
+      const d = RATING_ORDER[hr[hr.length - 2].r] - RATING_ORDER[hr[hr.length - 1].r];
       trend = d > 0 ? ' <b class="up">⬆ 승급</b>' : d < 0 ? ' <b class="down">⬇ 강등</b>' : '';
     }
     let notice = '';
@@ -582,7 +590,7 @@
         <h2>${c.emoji} ${esc(p.name)} ${p.closed ? '<span class="badge">폐업</span>' : ''}</h2>
         ${p.menu ? `<p class="d-menu">${esc(p.menu)}</p>` : ''}
         <p class="d-meta">${esc(p.region)} ${esc(p.area)} · ${c.label}${p.address ? `<br>${esc(p.address)}` : ''}</p>
-        ${h.length ? `<div class="d-years">${h.map(x => `<span class="r-${x.r}" title="${esc(ratingOf(x.r).desc)}">'${x.y} ${ratingOf(x.r).label}</span>`).join('')}</div>` : ''}
+        ${h.length ? `<div class="d-years">${h.map(x => `<span class="r-${x.r}" title="${esc(yearRating(x.r).desc)}">'${x.y} ${yearRating(x.r).label}${x.r === 'visit' ? ' 방문' : ''}</span>`).join('')}</div>` : ''}
         ${p.memo ? `<p class="d-memo">${esc(p.memo)}</p>` : ''}
         ${notice}
         <div class="actions">
@@ -614,15 +622,15 @@
   function showRate(p) {
     const h = history(p);
     const cur = (h.find(x => x.y === THIS_YEAR) || {}).r;
-    const prev = h.filter(x => x.y !== THIS_YEAR).slice(-1)[0];
+    const prev = rated(h.filter(x => x.y !== THIS_YEAR)).slice(-1)[0];
     openSheet(`
       <h3>${esc(p.name)} · '${THIS_YEAR} 평가</h3>
       <p class="d-meta">${prev ? `지난 등급: '${prev.y} ${ratingOf(prev.r).label} ${esc(ratingOf(prev.r).desc)}` : '처음 남기는 평가예요'}</p>
-      <div class="rate-opts">${RATED.map(o => `
+      <div class="rate-opts">${[...RATED, VISIT].map(o => `
         <button type="button" class="rate-opt r-${o.key}${cur === o.key ? ' on' : ''}" data-r="${o.key}"><b>${o.label}</b><span>${esc(o.desc)}</span></button>`).join('')}
       </div>
       <div class="form-actions">
-        ${cur ? '<button type="button" class="btn danger" data-act="unrate">올해 평가 지우기</button>' : ''}
+        ${cur ? '<button type="button" class="btn danger" data-act="unrate">올해 기록 지우기</button>' : ''}
         <button type="button" class="btn primary" data-act="back">취소</button>
       </div>`, 'rate');
     $('#sheetBody').onclick = e => {
@@ -631,7 +639,7 @@
       if (b) {
         const next = h.filter(x => x.y !== THIS_YEAR).concat({ y: THIS_YEAR, r: b.dataset.r }).sort((a, z) => a.y.localeCompare(z.y));
         savePlace(withHistory(p, next));
-        toast(`'${THIS_YEAR} ${ratingOf(b.dataset.r).label} 평가를 남겼어요`);
+        toast(b.dataset.r === 'visit' ? `'${THIS_YEAR} 방문을 기록했어요` : `'${THIS_YEAR} ${ratingOf(b.dataset.r).label} 평가를 남겼어요`);
         return select(p.id, { pan: false });
       }
       if (act === 'unrate') { savePlace(withHistory(p, h.filter(x => x.y !== THIS_YEAR))); return select(p.id, { pan: false }); }
@@ -647,7 +655,7 @@
       <form class="form" id="placeForm">
         <h3>${isNew ? '맛집 추가' : '맛집 편집'}</h3>
         <label class="field"><span>가게 이름</span><input name="name" value="${esc(d.name)}" required placeholder="예) 담박집"></label>
-        <div class="field"><span>연도별 등급 <small>· 그 해에 받은 등급, 지도에는 가장 최근 등급이 표시돼요</small></span>
+        <div class="field"><span>연도별 등급 <small>· 그 해에 받은 등급, 지도에는 가장 최근 등급이 표시돼요. 👣 방문은 등급을 바꾸지 않아요</small></span>
           <div id="hist">${history(d).map(histRow).join('')}</div>
           <button type="button" class="btn small" data-act="addyear">+ 연도 추가</button>
           <p class="hint">하나도 없으면 🔖 가볼곳으로 저장돼요</p>
@@ -723,7 +731,7 @@
   }
 
   const histRow = x => `<div class="hrow"><span>'</span><input class="hy" value="${esc(x.y)}" inputmode="numeric" maxlength="2" aria-label="연도">
-    <select class="hr" aria-label="등급">${RATED.map(o => `<option value="${o.key}"${x.r === o.key ? ' selected' : ''}>${o.label} ${o.short}</option>`).join('')}</select>
+    <select class="hr" aria-label="등급">${[...RATED, VISIT].map(o => `<option value="${o.key}"${x.r === o.key ? ' selected' : ''}>${o.label} ${o.short}</option>`).join('')}</select>
     <button type="button" class="icon-btn" data-act="delyear" aria-label="이 연도 삭제">✕</button></div>`;
 
   // ─────────────────────────── 지도 탭으로 위치 고르기 ───────────────────────────
@@ -850,7 +858,7 @@
     const noPos = state.places.filter(needsLocate).length;
     openSheet(`
       <div class="list-head"><h3>내 맛집 ${list.length}곳</h3>
-        <div class="sorts">${[['rating', '등급순'], ['recent', '최근 평가'], ['dist', '가까운 순']].map(([k, l]) => `<button data-sort="${k}" class="${s === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+        <div class="sorts">${[['rating', '등급순'], ['recent', '최근 방문'], ['dist', '가까운 순']].map(([k, l]) => `<button data-sort="${k}" class="${s === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
       ${noPos && canEdit() ? `<div class="notice"><span>📍 정확한 위치가 없는 곳이 ${noPos}곳 있어요</span><button class="btn small" data-act="autolocate">자동으로 찾기</button></div>` : ''}
       ${list.length ? `<ul class="items">${list.map(itemHtml).join('')}</ul>` : `<p class="empty">조건에 맞는 맛집이 없어요</p>`}`, 'list');
 

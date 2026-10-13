@@ -95,7 +95,7 @@ body.picking #map { cursor: crosshair; }
 /* 상세 */
 .d-rating { font-size: 13px; font-weight: 700; color: var(--c); }
 .d-rating span { font-weight: 500; color: var(--sub); margin-left: 4px; }
-.r-3 { --c: var(--r3); } .r-2 { --c: var(--r2); } .r-1 { --c: var(--r1); } .r-bib { --c: #b07c00; } .r-wish { --c: var(--rwish); }
+.r-3 { --c: var(--r3); } .r-2 { --c: var(--r2); } .r-1 { --c: var(--r1); } .r-bib { --c: #b07c00; } .r-wish { --c: var(--rwish); } .r-visit { --c: var(--sub); }
 .detail h2 { margin: 4px 0 2px; font-size: 22px; letter-spacing: -.3px; }
 .badge { display: inline-block; vertical-align: middle; font-size: 12px; font-weight: 600; background: var(--soft); color: var(--sub); border-radius: 6px; padding: 2px 7px; }
 .d-menu { margin: 6px 0; font-size: 16px; }

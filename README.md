@@ -84,4 +84,4 @@ URL을 아는 사람도 토큰이 없으면 읽기·쓰기가 안 된다.
 ## 시트 열 설명
 
 `rating`: `3` `2` `1` `bib`(🌝) `wish`(가볼곳) · `category`: katsu noodle chinese soup korean meat seafood japanese western cafe etc
-`years`: 연도별 등급 `23:bib 24:bib 25:1` (그 해에 받은 등급, 예전 형식 `23 24 25`도 읽음) · `approx`: `auto`(자동으로 찾은 위치) / `city`(도시 중심) / 빈칸(확정)
+`years`: 연도별 등급 `23:bib 24:bib 25:1 26:visit` (visit = 방문만 기록, 등급 유지) (그 해에 받은 등급, 예전 형식 `23 24 25`도 읽음) · `approx`: `auto`(자동으로 찾은 위치) / `city`(도시 중심) / 빈칸(확정)
