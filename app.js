@@ -1162,6 +1162,12 @@
     openModal(`
       <h3>설정</h3>
       <p class="help">${first ? '카카오 지도 키를 넣으면 시작할 수 있어요. 시트 주소를 비워 두면 이 기기에만 저장돼요.' : `${state.places.length}곳 · ${status}`}</p>
+      <form id="linkForm" class="link-form">
+        <label class="field"><span>공유받은 링크로 연결 <small>· 홈 화면 앱에서는 여기에 링크를 붙여넣으세요</small></span>
+          <input name="link" placeholder="https://abinkim.github.io/matchelin/?cfg=…" autocomplete="off"></label>
+        <button class="btn primary">연결</button>
+      </form>
+      <hr>
       <form id="cfgForm">
         <label class="field"><span>카카오 JavaScript 키</span><input name="kakaoKey" value="${esc(cfg.kakaoKey)}" placeholder="developers.kakao.com → 내 애플리케이션 → 앱 키"></label>
         <label class="field"><span>구글 시트 Apps Script 웹앱 URL</span><input name="apiUrl" value="${esc(cfg.apiUrl)}" placeholder="https://script.google.com/macros/s/…/exec"></label>
@@ -1177,6 +1183,15 @@
         ${cfg.apiUrl && (cfg.viewToken || !editor) ? '<button class="btn" data-act="share-view">👀 보기 전용 링크 복사 <small>— 구경만 할 친구</small></button>' : ''}
         <button class="btn" data-act="export">💾 JSON 백업 내려받기</button>
       </div>`, body => {
+      $('#linkForm', body).onsubmit = e => {
+        e.preventDefault();
+        if (!applyShareLink(e.target.link.value)) return toast('링크를 읽지 못했어요. 받은 링크 전체를 붙여넣어 주세요');
+        closeModal();
+        document.body.classList.toggle('readonly', !canEdit());
+        renderAll();
+        toast(canEdit() ? '연결했어요 (편집 가능)' : '연결했어요 (보기 전용)');
+        pull();
+      };
       const form = $('#cfgForm', body);
       form.onsubmit = e => {
         e.preventDefault();
@@ -1253,29 +1268,35 @@
     const token = kind === 'view' ? (canEdit() ? cfg.viewToken : cfg.token) : cfg.token;
     if (!token) return toast('보기 전용 토큰이 아직 없어요. 시트에서 다시 불러온 뒤 시도해 주세요');
     const payload = btoa(unescape(encodeURIComponent(JSON.stringify({ u: cfg.apiUrl, t: token, r: kind }))));
-    const url = `${location.origin}${location.pathname}#cfg=${payload}`;
+    const url = `${location.origin}${location.pathname}?cfg=${encodeURIComponent(payload)}`;
     const msg = kind === 'view' ? '보기 전용 링크를 복사했어요. 받은 사람은 구경만 할 수 있어요' : '편집용 링크를 복사했어요. 받은 사람은 추가·수정·삭제를 할 수 있으니 믿을 수 있는 사람에게만 보내세요';
     try { await navigator.clipboard.writeText(url); toast(msg, 4500); }
     catch { prompt('이 링크를 복사하세요', url); }
   }
 
-  function readHashConfig() {
-    const m = location.hash.match(/cfg=([^&]+)/);
-    if (!m) return;
+  // 공유 링크의 cfg(?cfg= 또는 예전 #cfg=)를 읽어 설정에 반영. 성공하면 true
+  function applyShareLink(text) {
+    const m = String(text || '').match(/[?#&]cfg=([^&#\s]+)/);
+    if (!m) return false;
     try {
-      const c = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+      const c = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(m[1])))));
       if (c.k) cfg.kakaoKey = c.k;
-      if (c.u && c.t) {
-        if (c.u !== cfg.apiUrl || c.t !== cfg.token) {
-          // 다른 지도로 바뀜 → 이전 지도의 캐시를 비운다
-          state.places = []; state.pending = [];
-          store.set(KEY.places, []); store.set(KEY.pending, []); store.set(KEY.version, '');
-        }
-        Object.assign(cfg, { apiUrl: c.u, token: c.t, role: c.r === 'view' ? 'view' : 'edit', viewToken: '' });
+      if (!c.u || !c.t) return false;
+      if (c.u !== cfg.apiUrl || c.t !== cfg.token) {
+        // 다른 지도로 바뀜 → 이전 지도의 캐시를 비운다
+        state.places = []; state.pending = [];
+        store.set(KEY.places, []); store.set(KEY.pending, []); store.set(KEY.version, '');
       }
+      Object.assign(cfg, { apiUrl: c.u, token: c.t, role: c.r === 'view' ? 'view' : 'edit', viewToken: '' });
       store.set(KEY.cfg, cfg);
-    } catch { /* 잘못된 링크 */ }
-    history.replaceState(null, '', location.pathname + location.search);
+      return true;
+    } catch { return false; }
+  }
+
+  function readHashConfig() {
+    if (!/cfg=/.test(location.search + location.hash)) return;
+    applyShareLink(location.search + location.hash);
+    window.history.replaceState(null, '', location.pathname);
   }
 
   // ─────────────────────────── 기타 ───────────────────────────
