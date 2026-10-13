@@ -818,7 +818,7 @@
       await loadKakao(cfg.kakaoKey);
       initMap();
     } catch (e) {
-      toast('카카오 지도를 불러오지 못했어요. 키와 등록된 사이트 도메인을 확인해 주세요', 6000);
+      toast('카카오 지도를 불러오지 못했어요. 카카오 콘솔에서 ① 카카오맵 사용 설정 ② JavaScript SDK 도메인 ③ JavaScript 키를 확인해 주세요', 8000);
       openSettings(true);
     }
     pull();
