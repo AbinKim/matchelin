@@ -415,13 +415,7 @@
         if (pan) m.setView(at, 15);
       },
       center() { const c = m.getCenter(); return { lat: c.lat, lng: c.lng }; },
-      async search(q, near) {
-        const c = near || (m ? this.center() : null);
-        try {
-          const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10${c ? `&lat=${c.lat}&lon=${c.lng}` : ''}`);
-          return ((await r.json()).features || []).map(fromPhoton).filter(x => x.name);
-        } catch { return []; }
-      },
+      search(q, near) { return photonSearch(q, near || this.center()); },
       async describe(lat, lng) {
         try {
           const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`);
@@ -432,6 +426,13 @@
         } catch { return { region: '', area: '', address: '' }; }
       },
     };
+  }
+
+  async function photonSearch(q, c) {
+    try {
+      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10${c ? `&lat=${c.lat}&lon=${c.lng}` : ''}`);
+      return ((await r.json()).features || []).map(fromPhoton).filter(x => x.name);
+    } catch { return []; }
   }
 
   function fromPhoton(f) {
@@ -464,7 +465,7 @@
           window.gm_authFailure = () => reject(new Error('google auth'));
           loadAsset('script', { src: `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&callback=__gmReady` }).catch(reject);
         });
-        await Promise.all(['maps', 'marker', 'places', 'geocoding'].map(l => google.maps.importLibrary(l)));
+        await Promise.all(['maps', 'marker'].map(l => google.maps.importLibrary(l)));
         await loadAsset('script', { src: 'https://unpkg.com/@googlemaps/markerclusterer@2.5.3/dist/index.min.js' });
       },
       init(el) {
@@ -509,41 +510,53 @@
         if (pan) { gm.setZoom(15); gm.setCenter(pos); }
       },
       center() { const c = gm.getCenter(); return { lat: c.lat(), lng: c.lng() }; },
+      // 검색·주소 찾기는 Apps Script가 대신 구글에 묻는다 (검색 키는 브라우저에 없음).
+      // 시트 미연동이거나 서버에 키가 없으면 OpenStreetMap 검색으로 대신한다
       async search(q, near) {
         const c = near || (gm ? this.center() : null);
-        try {
-          const { places } = await google.maps.places.Place.searchByText({
-            textQuery: q, maxResultCount: 10,
-            fields: ['id', 'displayName', 'formattedAddress', 'location', 'types', 'primaryTypeDisplayName', 'addressComponents'],
-            ...(c ? { locationBias: { center: c, radius: 50000 } } : {}),
-          });
-          return places.map(pl => {
-            const ac = (pl.addressComponents || []).map(x => ({ types: x.types, long: x.longText, short: x.shortText }));
-            const types = (pl.types || []).join(' ');
-            return {
-              id: `g:${pl.id}`, name: pl.displayName || '', lat: pl.location.lat(), lng: pl.location.lng(), address: pl.formattedAddress || '',
-              sub: [pl.primaryTypeDisplayName, pl.formattedAddress].filter(Boolean).join(' · '),
-              cat: `${types} ${pl.primaryTypeDisplayName || ''} ${pl.displayName || ''}`,
-              country: COUNTRY_KO[comp(ac, 'country', 'short')] || comp(ac, 'country', 'long'),
-              city: comp(ac, 'locality', 'long') || comp(ac, 'administrative_area_level_2', 'long') || comp(ac, 'administrative_area_level_1', 'long'),
-              food: isFoodType(types),
-            };
-          }).filter(x => x.name);
-        } catch (e) { console.warn('google search', e); return []; }
+        if (cfg.apiUrl && canEdit()) {
+          try {
+            const res = await api({ action: 'gsearch', q, lat: c ? c.lat : null, lng: c ? c.lng : null });
+            if (res.ok) return res.places.map(fromGooglePlace).filter(x => x.name);
+            if (res.error !== 'no google key') { console.warn('google search', res.error); if (res.error === 'rate limit') toast('검색이 너무 잦아요. 1분 뒤에 다시 해 주세요'); return []; }
+          } catch (e) { console.warn(e); }
+        }
+        return photonSearch(q, c);
       },
       async describe(lat, lng) {
-        try {
-          const { results } = await new google.maps.Geocoder().geocode({ location: { lat, lng } });
-          const r = results[0];
-          if (!r) return { region: '', area: '', address: '' };
-          const ac = r.address_components.map(x => ({ types: x.types, long: x.long_name, short: x.short_name }));
-          return {
-            region: COUNTRY_KO[comp(ac, 'country', 'short')] || comp(ac, 'country', 'long'),
-            area: comp(ac, 'locality', 'long') || comp(ac, 'administrative_area_level_1', 'long'),
-            address: r.formatted_address,
-          };
-        } catch { return { region: '', area: '', address: '' }; }
+        if (cfg.apiUrl && canEdit()) {
+          try {
+            const res = await api({ action: 'greverse', lat, lng });
+            const r = res.ok && res.results[0];
+            if (r) {
+              const ac = r.address_components.map(x => ({ types: x.types, long: x.long_name, short: x.short_name }));
+              return {
+                region: COUNTRY_KO[comp(ac, 'country', 'short')] || comp(ac, 'country', 'long'),
+                area: comp(ac, 'locality', 'long') || comp(ac, 'administrative_area_level_1', 'long'),
+                address: r.formatted_address,
+              };
+            }
+          } catch (e) { console.warn(e); }
+        }
+        return osmEngine().describe(lat, lng);
       },
+    };
+  }
+
+  // Places API(New) REST 결과 → 검색 목록 공통 형태
+  function fromGooglePlace(pl) {
+    const ac = (pl.addressComponents || []).map(x => ({ types: x.types, long: x.longText, short: x.shortText }));
+    const pick = (type, field) => { const c = ac.find(x => x.types.includes(type)); return c ? c[field] : ''; };
+    const types = (pl.types || []).join(' ');
+    const typeName = pl.primaryTypeDisplayName ? pl.primaryTypeDisplayName.text : '';
+    const name = pl.displayName ? pl.displayName.text : '';
+    return {
+      id: `g:${pl.id}`, name, lat: pl.location.latitude, lng: pl.location.longitude, address: pl.formattedAddress || '',
+      sub: [typeName, pl.formattedAddress].filter(Boolean).join(' · '),
+      cat: `${types} ${typeName} ${name}`,
+      country: COUNTRY_KO[pick('country', 'short')] || pick('country', 'long'),
+      city: pick('locality', 'long') || pick('administrative_area_level_2', 'long') || pick('administrative_area_level_1', 'long'),
+      food: isFoodType(types),
     };
   }
 

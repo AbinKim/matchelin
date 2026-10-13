@@ -7,6 +7,9 @@
  *  3) [배포 → 새 배포 → 유형: 웹 앱], 실행 사용자: 나, 액세스 권한: 모든 사용자 → 배포 → 웹 앱 URL 복사
  *  4) 앱 설정 화면에 URL과 편집 토큰 입력 → 앱 설정에서 편집용/보기 전용 링크를 복사해 공유
  *
+ * 해외 가게 검색(구글)은 이 스크립트가 대신 한다. 검색용 구글 키는 [프로젝트 설정 → 스크립트 속성]에
+ * GOOGLE_KEY로 넣어 두면 브라우저에 노출되지 않는다. 편집 토큰으로만 쓸 수 있고 분당 30회로 제한한다.
+ *
  * 토큰은 두 개다. 편집 토큰(TOKEN)은 읽기·쓰기, 보기 토큰(VIEW_TOKEN)은 읽기만.
  * 보기 전용 링크를 끊으려면 rotateViewToken, 편집 링크까지 모두 끊으려면 rotateAllTokens를 실행한다.
  *
@@ -86,6 +89,7 @@ function doPost(e) {
   const role = role_(body.token);
   if (!role) return out_({ ok: false, error: 'unauthorized' });
   if (role !== 'edit') return out_({ ok: false, error: 'read only' });
+  if (body.action === 'gsearch' || body.action === 'greverse') return out_(google_(body));
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -99,6 +103,45 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ─── 구글 장소 검색 / 주소 찾기 (서버에서 대신 호출) ───
+function google_(body) {
+  const key = PropertiesService.getScriptProperties().getProperty('GOOGLE_KEY');
+  if (!key) return { ok: false, error: 'no google key' };
+  if (!rateOk_()) return { ok: false, error: 'rate limit' };
+  const lat = Number(body.lat), lng = Number(body.lng);
+  const hasPos = isFinite(lat) && isFinite(lng) && body.lat !== null && body.lng !== null;
+
+  if (body.action === 'gsearch') {
+    const req = { textQuery: String(body.q || '').slice(0, 200), maxResultCount: 10, languageCode: 'ko' };
+    if (hasPos) req.locationBias = { circle: { center: { latitude: lat, longitude: lng }, radius: 50000 } };
+    const res = UrlFetchApp.fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'post', contentType: 'application/json', payload: JSON.stringify(req), muteHttpExceptions: true,
+      headers: {
+        'X-Goog-Api-Key': key,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.primaryTypeDisplayName,places.addressComponents',
+      },
+    });
+    const data = JSON.parse(res.getContentText() || '{}');
+    if (res.getResponseCode() !== 200) return { ok: false, error: (data.error && data.error.message) || 'google ' + res.getResponseCode() };
+    return { ok: true, places: data.places || [] };
+  }
+
+  if (!hasPos) return { ok: false, error: 'bad position' };
+  const url = 'https://maps.googleapis.com/maps/api/geocode/json?latlng=' + lat + ',' + lng + '&language=ko&key=' + encodeURIComponent(key);
+  const data = JSON.parse(UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getContentText() || '{}');
+  if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') return { ok: false, error: data.error_message || data.status };
+  return { ok: true, results: (data.results || []).slice(0, 1) };
+}
+
+// 분당 30회까지만 (토큰이 새더라도 검색 요금이 크게 나가지 않게)
+function rateOk_() {
+  const cache = CacheService.getScriptCache();
+  const k = 'g' + Math.floor(Date.now() / 60000);
+  const n = Number(cache.get(k) || 0) + 1;
+  cache.put(k, String(n), 120);
+  return n <= 30;
 }
 
 function role_(token) {
