@@ -81,6 +81,14 @@ URL을 아는 사람도 토큰이 없으면 읽기·쓰기가 안 된다.
 그래서 상대 화면에는 보통 20초 안에 반영된다. 시트에서 직접 고친 내용도 같은 방식으로 반영된다.
 같은 가게를 두 사람이 동시에 고치면 나중에 저장한 쪽이 남는다.
 
+## 업데이트할 때
+
+GitHub Pages는 파일을 10분간 캐시한다. 예전 코드가 남지 않도록 `index.html`의 `?v=` 번호를 올린 뒤 push한다.
+
+```sh
+V=$(date +%Y%m%d%H%M); sed -i '' -E "s/\?v=[0-9]+/?v=$V/g" index.html
+```
+
 ## 시트 열 설명
 
 `rating`: `3` `2` `1` `bib`(🌝) `wish`(가볼곳) · `category`: katsu noodle chinese soup korean meat seafood japanese western cafe etc
