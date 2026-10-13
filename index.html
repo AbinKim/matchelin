@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>맛슐랭</title>
+<meta name="description" content="내 맛집 미슐랭 지도">
+<meta name="theme-color" content="#b3001b">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="맛슐랭">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="map"></div>
+
+<header class="top">
+  <form id="searchForm" class="searchbar" autocomplete="off">
+    <span class="logo" aria-hidden="true">💫</span>
+    <input id="q" type="search" placeholder="내 맛집 · 가게 이름 검색" enterkeyhint="search">
+    <span id="syncDot" class="sync-dot" title="로컬 모드"></span>
+    <button type="button" id="btnSettings" class="icon-btn" aria-label="설정">⚙︎</button>
+  </form>
+  <div id="chips" class="chips"></div>
+</header>
+
+<div id="banner" class="banner" hidden>
+  <span id="bannerText"></span>
+  <button type="button" id="bannerCancel">취소</button>
+</div>
+
+<div class="fabs">
+  <button type="button" id="btnLocate" class="fab" aria-label="내 위치">◎</button>
+  <button type="button" id="btnList" class="fab" aria-label="목록">☰</button>
+  <button type="button" id="btnAdd" class="fab primary" aria-label="맛집 추가">＋</button>
+</div>
+
+<section id="sheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div class="grip"></div>
+    <button type="button" id="sheetClose" class="icon-btn" aria-label="닫기">✕</button>
+  </div>
+  <div id="sheetBody" class="sheet-body"></div>
+</section>
+
+<dialog id="modal"><div id="modalBody"></div></dialog>
+<div id="toast" class="toast" hidden></div>
+
+<script src="config.js"></script>
+<script src="parser.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
