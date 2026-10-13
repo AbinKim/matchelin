@@ -33,9 +33,28 @@ function setup() {
   Logger.log('토큰: ' + token);
 }
 
+// v(앱이 마지막으로 받은 버전)가 지금 버전과 같으면 목록 없이 unchanged만 돌려준다 — 20초마다 확인해도 가볍게
 function doGet(e) {
   if (!authorized_(e.parameter.token)) return out_({ ok: false, error: 'unauthorized' });
-  return out_({ ok: true, places: readAll_(getSheet_()) });
+  const version = getVersion_();
+  if (e.parameter.v && e.parameter.v === version) return out_({ ok: true, unchanged: true, version: version });
+  return out_({ ok: true, version: version, places: readAll_(getSheet_()) });
+}
+
+// 시트에서 직접 수정해도 버전을 올려 앱들이 새로 받아 가게 한다 (단순 트리거라 따로 설정할 것 없음)
+function onEdit() {
+  bumpVersion_();
+}
+
+function getVersion_() {
+  const props = PropertiesService.getScriptProperties();
+  let v = props.getProperty('VERSION');
+  if (!v) { v = String(Date.now()); props.setProperty('VERSION', v); }
+  return v;
+}
+
+function bumpVersion_() {
+  PropertiesService.getScriptProperties().setProperty('VERSION', String(Date.now()));
 }
 
 function doPost(e) {
@@ -50,6 +69,7 @@ function doPost(e) {
     if (body.action === 'upsert') upsert_(sh, body.places || []);
     else if (body.action === 'delete') remove_(sh, body.ids || []);
     else return out_({ ok: false, error: 'unknown action' });
+    bumpVersion_();
     return out_({ ok: true });
   } finally {
     lock.releaseLock();
@@ -104,7 +124,7 @@ function readAll_(sh) {
     const p = {};
     head.forEach((h, j) => { if (h) p[h] = row[j]; });
     if (!p.name) return;
-    if (!p.id) {  // 시트에서 직접 추가한 행
+    if (!p.id) {  // 시트에서 직접 추가한 행 — 버전은 그대로 둬서 다른 기기가 같은 id를 받게 한다
       p.id = 'p_' + Utilities.getUuid().replace(/-/g, '').slice(0, 10);
       sh.getRange(i + 2, idCol + 1).setValue(p.id);
     }

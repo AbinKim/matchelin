@@ -9,7 +9,7 @@
   const THIS_YEAR = String(new Date().getFullYear()).slice(2);
   const RATING_ORDER = Object.fromEntries(RATINGS.map((r, i) => [r.key, i]));
 
-  const KEY = { places: 'msl.places', pending: 'msl.pending', cfg: 'msl.cfg', view: 'msl.view', filter: 'msl.filter', sort: 'msl.sort' };
+  const KEY = { places: 'msl.places', pending: 'msl.pending', cfg: 'msl.cfg', view: 'msl.view', version: 'msl.version', filter: 'msl.filter', sort: 'msl.sort' };
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 저장 불가 환경 */ } },
@@ -66,9 +66,10 @@
   const savePlace = p => savePlaces([p]);
   const deletePlace = id => commit({ action: 'delete', ids: [id] });
 
-  async function api(payload) {
+  async function api(payload, version) {
     if (!payload) {
-      const r = await fetch(`${cfg.apiUrl}?token=${encodeURIComponent(cfg.token)}&t=${Date.now()}`);
+      const v = version ? `&v=${encodeURIComponent(version)}` : '';
+      const r = await fetch(`${cfg.apiUrl}?token=${encodeURIComponent(cfg.token)}${v}&t=${Date.now()}`);
       return r.json();
     }
     // text/plain 본문이라 CORS 사전요청 없이 Apps Script로 바로 간다
@@ -83,6 +84,7 @@
   }
 
   let flushing = false;
+  let writeSeq = 0; // 쓰기가 성공할 때마다 증가 — 그 사이에 받아 온 옛 목록을 버리기 위함
   async function flush() {
     if (flushing || !cfg.apiUrl) return;
     flushing = true;
@@ -93,6 +95,7 @@
         if (!res || !res.ok) throw new Error(res && res.error || '응답 없음');
         state.pending.shift();
         store.set(KEY.pending, state.pending);
+        writeSeq++;
       }
       setSync('ok');
     } catch (e) {
@@ -103,20 +106,28 @@
     }
   }
 
-  async function pull() {
+  // quiet: 주기적 확인용 — 시트 버전이 같으면 목록을 받지 않고, 실패해도 알림을 띄우지 않는다
+  let pulling = false;
+  async function pull({ quiet = false } = {}) {
     if (!cfg.apiUrl) { setSync(''); return; }
-    setSync('busy', '불러오는 중…');
+    if (pulling || (quiet && flushing)) return;
+    pulling = true;
+    const seq = writeSeq;
+    if (!quiet) setSync('busy', '불러오는 중…');
     try {
-      const res = await api();
+      const res = await api(null, quiet ? store.get(KEY.version, '') : '');
       if (!res.ok) throw new Error(res.error);
+      if (res.unchanged) { if (!state.pending.length) setSync('ok'); return; }
+      if (flushing || seq !== writeSeq) return; // 받는 사이 내 변경이 저장됨 → 다음 확인 때 다시 받음
       // 시트가 비어 있고 이 기기에 데이터가 있으면 올릴지 묻는다 (로컬 모드 → 시트 전환)
-      if (!res.places.length && state.places.length && !state.pending.length) {
+      if (!quiet && !res.places.length && state.places.length && !state.pending.length) {
         if (confirm(`시트가 비어 있어요. 이 기기에 있는 ${state.places.length}곳을 시트에 올릴까요?`)) {
           state.pending.push({ action: 'upsert', places: state.places });
           store.set(KEY.pending, state.pending);
           return flush();
         }
       }
+      store.set(KEY.version, res.version || '');
       const hadPins = state.places.some(hasPos);
       let list = res.places;
       for (const op of state.pending) list = applyOp(list, op); // 아직 못 보낸 변경 유지
@@ -124,13 +135,32 @@
       persist();
       renderAll();
       if (map && !hadPins) fitAll();
-      if (state.selected && byId(state.selected) && $('#sheet').dataset.kind === 'detail') showDetail(byId(state.selected));
+      refreshOpenSheet();
       await flush();
       setSync(state.pending.length ? 'error' : 'ok');
     } catch (e) {
       setSync('error', '불러오기 실패: ' + e.message);
-      toast(/unauthorized/.test(e.message) ? '시트 토큰이 맞지 않아요' : '시트를 불러오지 못했어요. 저장된 데이터로 보여드릴게요');
+      if (!quiet) toast(/unauthorized/.test(e.message) ? '시트 토큰이 맞지 않아요' : '시트를 불러오지 못했어요. 저장된 데이터로 보여드릴게요');
+    } finally {
+      pulling = false;
     }
+  }
+
+  // 다른 기기의 변경을 받아 왔을 때 열려 있는 상세/목록을 새로 그린다 (편집 중인 폼은 건드리지 않음)
+  function refreshOpenSheet() {
+    const sh = $('#sheet');
+    if (sh.hidden) return;
+    if (sh.dataset.kind === 'detail') {
+      const p = state.selected && byId(state.selected);
+      if (p) showDetail(p); else { closeSheet(); toast('다른 기기에서 삭제된 곳이에요'); }
+    } else if (sh.dataset.kind === 'list') showList();
+  }
+
+  const POLL_MS = 20000;
+  function startLiveSync() {
+    setInterval(() => { if (!document.hidden) pull({ quiet: true }); }, POLL_MS);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pull({ quiet: true }); });
+    window.addEventListener('online', () => { flush(); pull({ quiet: true }); });
   }
 
   // ─────────────────────────── 카카오 지도 ───────────────────────────
@@ -673,6 +703,7 @@
         Object.assign(cfg, { kakaoKey: fd.get('kakaoKey').trim(), apiUrl: fd.get('apiUrl').trim(), token: fd.get('token').trim() });
         store.set(KEY.cfg, cfg);
         closeModal();
+        if (apiChanged) store.set(KEY.version, '');
         if (keyChanged || !map) return location.reload();
         if (apiChanged) pull();
         toast('저장했어요');
@@ -782,7 +813,7 @@
     bindUi();
     renderChips();
     setSync(cfg.apiUrl ? 'busy' : '');
-    if (!cfg.kakaoKey) { openSettings(true); pull(); return; }
+    if (!cfg.kakaoKey) { openSettings(true); pull(); startLiveSync(); return; }
     try {
       await loadKakao(cfg.kakaoKey);
       initMap();
@@ -791,6 +822,7 @@
       openSettings(true);
     }
     pull();
+    startLiveSync();
   }
 
   boot();
