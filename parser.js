@@ -49,6 +49,37 @@
     파리: [48.8566, 2.3522], 런던: [51.5074, -0.1278], 로마: [41.9028, 12.4964], 바르셀로나: [41.3874, 2.1686],
   };
 
+  // 지역 필터는 도·광역시 단위로 묶는다. region에는 '포항' 같은 시·군 이름이 들어 있다
+  const METROS = ['서울', '부산', '대구', '인천', '광주', '대전', '울산', '세종'];
+  const PROVINCE_CITIES = {
+    경기: '수원 성남 고양 용인 부천 안산 안양 남양주 화성 평택 의정부 시흥 파주 김포 광명 군포 하남 오산 이천 안성 의왕 양주 구리 포천 동두천 과천 여주 양평 가평 연천',
+    강원: '춘천 원주 강릉 동해 태백 속초 삼척 홍천 횡성 영월 평창 정선 철원 화천 양구 인제 양양',
+    충북: '청주 충주 제천 보은 옥천 영동 증평 진천 괴산 음성 단양',
+    충남: '천안 공주 보령 아산 서산 논산 계룡 당진 금산 부여 서천 청양 홍성 예산 태안',
+    전북: '전주 군산 익산 정읍 남원 김제 완주 진안 무주 장수 임실 순창 고창 부안',
+    전남: '목포 여수 순천 나주 광양 담양 곡성 구례 고흥 보성 화순 장흥 강진 해남 영암 무안 함평 영광 장성 완도 진도 신안',
+    경북: '포항 경주 김천 안동 구미 영주 영천 상주 문경 경산 의성 청송 영양 영덕 청도 고령 성주 칠곡 예천 봉화 울진 울릉',
+    경남: '창원 진주 통영 사천 김해 밀양 거제 양산 의령 함안 창녕 고성 남해 하동 산청 함양 거창 합천',
+    제주: '제주 서귀포',
+  };
+  const CITY_PROVINCE = {};
+  Object.entries(PROVINCE_CITIES).forEach(([prov, list]) => list.split(' ').forEach(c => { CITY_PROVINCE[c] = prov; }));
+  const ADDR_PROVINCE = [
+    [/^경기/, '경기'], [/^강원/, '강원'], [/^(충북|충청북)/, '충북'], [/^(충남|충청남)/, '충남'], [/^(전북|전라북)/, '전북'],
+    [/^(전남|전라남)/, '전남'], [/^(경북|경상북)/, '경북'], [/^(경남|경상남)/, '경남'], [/^제주/, '제주'],
+  ];
+
+  // 필터용 큰 지역: 해외는 나라, 광역시는 그대로, 그 외 시·군은 도
+  function provinceOf(p) {
+    const region = String(p.region || '').trim();
+    if (isOverseas(region) || METROS.includes(region)) return region;
+    if (CITY_PROVINCE[region]) return CITY_PROVINCE[region];
+    const addr = String(p.address || '').trim();
+    for (const [re, prov] of ADDR_PROVINCE) if (re.test(addr)) return prov;
+    const metro = METROS.find(m => addr.startsWith(m));
+    return metro || region || '기타';
+  }
+
   const HANGUL = /[가-힣]/;
 
   function ratingOf(key) { return RATINGS.find(r => r.key === key) || RATINGS[3]; }
@@ -128,5 +159,5 @@
 
   function placeKey(p) { return `${p.region}|${p.area}|${p.name}`.replace(/\s+/g, ''); }
 
-  return { RATINGS, CATEGORIES, ratingOf, categoryOf, isOverseas, cityCoord, guessCategory, parseMemo, parseYears, placeKey };
+  return { RATINGS, CATEGORIES, ratingOf, categoryOf, isOverseas, provinceOf, cityCoord, guessCategory, parseMemo, parseYears, placeKey };
 });

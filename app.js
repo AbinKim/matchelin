@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const { RATINGS, CATEGORIES, ratingOf, categoryOf, isOverseas, guessCategory, parseMemo, placeKey } = window.MemoParser;
+  const { RATINGS, CATEGORIES, ratingOf, categoryOf, isOverseas, provinceOf, guessCategory, parseMemo, placeKey } = window.MemoParser;
 
   const $ = (s, el = document) => el.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -21,7 +21,7 @@
   const state = {
     places: store.get(KEY.places, []),
     pending: store.get(KEY.pending, []),
-    filter: { ratings: [], category: '', region: '', hideClosed: false, ...store.get(KEY.filter, {}) },
+    filter: (({ region, ...f }) => ({ ratings: [], category: '', province: '', hideClosed: false, ...f }))(store.get(KEY.filter, {})),
     sort: store.get(KEY.sort, 'rating'),
     selected: null,
     pick: null,       // 지도 탭으로 위치 고르는 중일 때의 콜백
@@ -311,7 +311,7 @@
     const f = state.filter;
     if (f.ratings.length && !f.ratings.includes(p.rating)) return false;
     if (f.category && p.category !== f.category) return false;
-    if (f.region && p.region !== f.region) return false;
+    if (f.province && provinceOf(p) !== f.province) return false;
     if (f.hideClosed && p.closed) return false;
     return true;
   }
@@ -324,12 +324,13 @@
 
   function renderChips() {
     const f = state.filter;
-    const rc = countBy(p => p.rating), cc = countBy(p => p.category), gc = countBy(p => p.region);
+    const rc = countBy(p => p.rating), cc = countBy(p => p.category), gc = countBy(provinceOf);
     const regions = Object.keys(gc).sort((a, b) => (isOverseas(a) - isOverseas(b)) || gc[b] - gc[a]);
+    if (f.province && !gc[f.province]) f.province = '';
     $('#chips').innerHTML =
       RATINGS.map(r => `<button type="button" class="chip${f.ratings.includes(r.key) ? ' on' : ''}" data-rating="${r.key}">${r.label} ${r.key === 'bib' || r.key === 'wish' ? r.short : ''}<small>${rc[r.key] || 0}</small></button>`).join('') +
       `<select class="chip${f.category ? ' on' : ''}" data-f="category"><option value="">종류 전체</option>${CATEGORIES.filter(c => cc[c.key]).map(c => `<option value="${c.key}"${f.category === c.key ? ' selected' : ''}>${c.emoji} ${c.label} (${cc[c.key]})</option>`).join('')}</select>` +
-      `<select class="chip${f.region ? ' on' : ''}" data-f="region"><option value="">지역 전체</option>${regions.map(r => `<option value="${esc(r)}"${f.region === r ? ' selected' : ''}>${esc(r)} (${gc[r]})</option>`).join('')}</select>` +
+      `<select class="chip${f.province ? ' on' : ''}" data-f="province"><option value="">지역 전체</option>${regions.map(r => `<option value="${esc(r)}"${f.province === r ? ' selected' : ''}>${esc(r)} (${gc[r]})</option>`).join('')}</select>` +
       `<button type="button" class="chip${f.hideClosed ? ' on' : ''}" data-closed>폐업 숨김</button>`;
   }
 
@@ -343,15 +344,15 @@
       } else f.hideClosed = !f.hideClosed;
     } else if (e.type === 'change' && e.target.dataset.f) {
       f[e.target.dataset.f] = e.target.value;
-      if (e.target.dataset.f === 'region' && f.region) zoomToRegion(f.region);
+      if (e.target.dataset.f === 'province' && f.province) zoomToRegion(f.province);
     } else return;
     store.set(KEY.filter, f);
     renderAll();
     if ($('#sheet').dataset.kind === 'list' && !$('#sheet').hidden) showList();
   }
 
-  function zoomToRegion(region) {
-    const pts = state.places.filter(p => p.region === region && hasPos(p));
+  function zoomToRegion(province) {
+    const pts = state.places.filter(p => provinceOf(p) === province && hasPos(p));
     if (!pts.length || !map) return;
     const b = new kakao.maps.LatLngBounds();
     pts.forEach(p => b.extend(LL(p.lat, p.lng)));
