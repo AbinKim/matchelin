@@ -181,4 +181,4 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .preview { font-size: 13.5px; background: var(--soft); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
 .preview ul { margin: 6px 0 0; padding-left: 18px; }
 
-.toast { position: fixed; z-index: 50; left: 50%; bottom: calc(var(--safe-b) + 90px); transform: translateX(-50%); background: rgba(29, 29, 31, .92); color: #fff; border-radius: 12px; padding: 10px 16px; font-size: 14px; max-width: calc(100vw - 32px); text-align: center; }
+.toast { position: fixed; z-index: 50; left: 50%; bottom: calc(var(--safe-b) + 90px); transform: translateX(-50%); background: rgba(29, 29, 31, .92); color: #fff; border-radius: 12px; padding: 10px 16px; font-size: 14px; max-width: calc(100vw - 32px); text-align: center; white-space: pre-line; }

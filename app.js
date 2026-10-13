@@ -415,7 +415,7 @@
         if (pan) m.setView(at, 15);
       },
       center() { const c = m.getCenter(); return { lat: c.lat, lng: c.lng }; },
-      search(q, near) { return photonSearch(q, near || this.center()); },
+      async search(q, near) { return tag(await photonSearch(q, near || this.center()), 'OpenStreetMap'); },
       async describe(lat, lng) {
         try {
           const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`);
@@ -512,16 +512,22 @@
       center() { const c = gm.getCenter(); return { lat: c.lat(), lng: c.lng() }; },
       // 검색·주소 찾기는 Apps Script가 대신 구글에 묻는다 (검색 키는 브라우저에 없음).
       // 시트 미연동이거나 서버에 키가 없으면 OpenStreetMap 검색으로 대신한다
+      // 실패하면 OpenStreetMap 결과로 대신하되, 왜 구글 검색이 안 됐는지 results.error에 남긴다
       async search(q, near) {
         const c = near || (gm ? this.center() : null);
-        if (cfg.apiUrl && canEdit()) {
+        let error = '';
+        if (!cfg.apiUrl) error = '구글 검색은 시트를 연동해야 쓸 수 있어요';
+        else if (canEdit()) {
           try {
             const res = await api({ action: 'gsearch', q, lat: c ? c.lat : null, lng: c ? c.lng : null });
-            if (res.ok) return res.places.map(fromGooglePlace).filter(x => x.name);
-            if (res.error !== 'no google key') { console.warn('google search', res.error); if (res.error === 'rate limit') toast('검색이 너무 잦아요. 1분 뒤에 다시 해 주세요'); return []; }
-          } catch (e) { console.warn(e); }
+            if (res.ok) return tag(res.places.map(fromGooglePlace).filter(x => x.name), '구글');
+            error = googleErrorHint(res.error);
+          } catch (e) {
+            error = 'Apps Script가 구글에 접속할 권한이 없어요. 편집기에서 setup을 한 번 더 실행해 권한을 허용하고, 새 버전으로 다시 배포해 주세요';
+          }
+          console.warn('google search:', error);
         }
-        return photonSearch(q, c);
+        return tag(await photonSearch(q, c), 'OpenStreetMap', error);
       },
       async describe(lat, lng) {
         if (cfg.apiUrl && canEdit()) {
@@ -541,6 +547,19 @@
         return osmEngine().describe(lat, lng);
       },
     };
+  }
+
+  const tag = (list, source, error = '') => Object.assign(list, { source, error });
+
+  function googleErrorHint(err = '') {
+    if (err === 'unknown action') return 'Apps Script가 예전 버전이에요. 배포 → 배포 관리 → 수정 → 새 버전으로 다시 배포해 주세요';
+    if (err === 'no google key') return 'Apps Script 스크립트 속성에 GOOGLE_KEY가 없어요';
+    if (err === 'rate limit') return '검색이 너무 잦아요. 1분 뒤에 다시 해 주세요';
+    if (/referer|referrer/i.test(err)) return 'GOOGLE_KEY에 웹사이트 제한이 걸린 키(지도 키)가 들어 있어요. 제한 없는 검색 키로 바꿔 주세요';
+    if (/not been used|disabled|not enabled|SERVICE_DISABLED/i.test(err)) return '구글 콘솔에서 Places API (New)가 사용 설정되지 않았어요';
+    if (/not authorized|blocked|API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED/i.test(err)) return '검색 키의 API 제한에 Places API (New)가 빠져 있어요';
+    if (/invalid|API_KEY_INVALID/i.test(err)) return 'GOOGLE_KEY 값이 올바르지 않아요. 다시 복사해 넣어 주세요';
+    return '구글 검색 오류: ' + err;
   }
 
   // Places API(New) REST 결과 → 검색 목록 공통 형태
@@ -964,9 +983,10 @@
 
   function placeResultsHtml(results, { world, assign }) {
     const saved = new Map(state.places.filter(p => p.placeId).map(p => [p.placeId, p]));
-    const source = world ? `해외 장소 (${W && W.name === 'google' ? '구글' : 'OpenStreetMap'})` : '카카오맵 장소';
+    const source = world ? `해외 장소 (${results.source || 'OpenStreetMap'})` : '카카오맵 장소';
+    const warn = results.error ? `<div class="notice"><span>⚠️ 구글 검색이 안 돼서 OpenStreetMap으로 찾았어요.<br>${esc(results.error)}</span></div>` : '';
     const hint = world ? '영어나 현지어 이름으로도 검색해 보세요. 못 찾으면 지도에서 직접 찍으면 돼요' : '동네 이름을 붙여 보세요 (예: "효자동 담박집")';
-    return `<p class="sec-title">${source} ${results.length}</p>` + (results.length
+    return warn + `<p class="sec-title">${source} ${results.length}</p>` + (results.length
       ? `<ul class="items">${results.map((r, i) => `
         <li data-i="${i}"><div class="em">${saved.has(r.id) ? '✅' : '📍'}</div>
           <div class="tx"><div class="nm">${esc(r.name)}</div><div class="sb">${esc(r.sub)}</div></div>
@@ -1018,7 +1038,8 @@
 
   function startAssignSearch(p) {
     state.assignTo = p.id;
-    const q = isOverseas(p.region) ? p.name : `${p.area.split('/')[0]} ${p.name}`.trim();
+    // 해외는 '가게 이름 + 도시'(예: 食処 やま利 후쿠오카)로 찾는다
+    const q = isOverseas(p.region) ? `${p.name} ${p.area.split(/\s+/).pop()}`.trim() : `${p.area.split('/')[0]} ${p.name}`.trim();
     $('#q').value = q;
     doSearch(q);
   }
@@ -1092,13 +1113,16 @@
     if (!todo.length) return toast('위치를 찾을 곳이 없어요');
     if (!map) return toast('지도가 준비되지 않았어요');
     const found = [], failed = [];
+    let searchError = '';
     for (let i = 0; i < todo.length; i++) {
       const p = todo[i];
       toast(`위치 찾는 중… ${i + 1}/${todo.length}`, 60000);
       if (isOverseas(p.region)) {
         // 도시 중심에서 50km 안의 결과만 인정 (같은 이름의 엉뚱한 곳 방지)
         const c = cityCoord(p.area) || [+p.lat, +p.lng];
-        const near = (await worldSearch(p.name, { lat: c[0], lng: c[1] })).filter(r => distKm({ lat: c[0], lng: c[1] }, r) < 50);
+        const all = await worldSearch(`${p.name} ${p.area.split(/\s+/).pop()}`, { lat: c[0], lng: c[1] });
+        if (all.error) searchError = all.error;
+        const near = all.filter(r => distKm({ lat: c[0], lng: c[1] }, r) < 50);
         const pick = near.find(r => r.food) || near[0];
         if (pick) found.push({ ...p, lat: pick.lat, lng: pick.lng, address: pick.address, placeId: pick.id, approx: 'auto' });
         else failed.push(p.name);
@@ -1116,7 +1140,7 @@
       await sleep(120);
     }
     if (found.length) savePlaces(found);
-    toast(`${found.length}곳 위치를 찾았어요${failed.length ? ` · 못 찾음 ${failed.length}곳` : ''}`, 4000);
+    toast(`${found.length}곳 위치를 찾았어요${failed.length ? ` · 못 찾음 ${failed.length}곳` : ''}${searchError ? `\n⚠️ ${searchError}` : ''}`, searchError ? 9000 : 4000);
     if (found.length && !state.world) fitAll();
     if ($('#sheet').dataset.kind === 'list') showList();
     if (failed.length) console.info('위치를 못 찾은 곳:', failed);
