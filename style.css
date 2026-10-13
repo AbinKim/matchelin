@@ -67,6 +67,7 @@ select.chip.on { background-image: none; padding-right: 11px; }
 .fab { width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--bg); box-shadow: var(--shadow); font-size: 20px; }
 .fab.primary { background: var(--red); color: #fff; font-size: 26px; width: 56px; height: 56px; }
 body.sheet-open .fabs { display: none; }
+body.readonly #btnAdd { display: none; }
 
 .banner { position: fixed; z-index: 25; left: 12px; right: 12px; bottom: calc(var(--safe-b) + 20px); max-width: 560px; margin: 0 auto; background: var(--ink); color: #fff; border-radius: 14px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow); font-size: 14px; }
 .banner span { flex: 1; }
@@ -151,6 +152,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
 #modalBody textarea.memo { width: 100%; min-height: 220px; font-size: 13px; border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
 .stack { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .stack .btn { justify-content: flex-start; }
+.stack .btn small { color: var(--sub); }
 hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .preview { font-size: 13.5px; background: var(--soft); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
 .preview ul { margin: 6px 0 0; padding-left: 18px; }

@@ -15,7 +15,9 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 저장 불가 환경 */ } },
   };
 
-  const cfg = { kakaoKey: (window.APP_CONFIG || {}).kakaoKey || '', apiUrl: '', token: '', ...store.get(KEY.cfg, {}) };
+  const cfg = { kakaoKey: '', apiUrl: '', token: '', role: 'edit', viewToken: '', ...store.get(KEY.cfg, {}) };
+  cfg.kakaoKey = cfg.kakaoKey || (window.APP_CONFIG || {}).kakaoKey || '';
+  const canEdit = () => cfg.role !== 'view';
   const state = {
     places: store.get(KEY.places, []),
     pending: store.get(KEY.pending, []),
@@ -49,6 +51,7 @@
   }
 
   function commit(op) {
+    if (!canEdit()) return toast('보기 전용으로 연결돼 있어요');
     state.places = applyOp(state.places, op);
     persist();
     renderAll();
@@ -117,10 +120,11 @@
     try {
       const res = await api(null, quiet ? store.get(KEY.version, '') : '');
       if (!res.ok) throw new Error(res.error);
-      if (res.unchanged) { if (!state.pending.length) setSync('ok'); return; }
+      if (res.unchanged) { applyRole(res); if (!state.pending.length) setSync('ok'); return; }
       if (flushing || seq !== writeSeq) return; // 받는 사이 내 변경이 저장됨 → 다음 확인 때 다시 받음
       // 시트가 비어 있고 이 기기에 데이터가 있으면 올릴지 묻는다 (로컬 모드 → 시트 전환)
-      if (!quiet && !res.places.length && state.places.length && !state.pending.length) {
+      applyRole(res);
+      if (!quiet && canEdit() && !res.places.length && state.places.length && !state.pending.length) {
         if (confirm(`시트가 비어 있어요. 이 기기에 있는 ${state.places.length}곳을 시트에 올릴까요?`)) {
           state.pending.push({ action: 'upsert', places: state.places });
           store.set(KEY.pending, state.pending);
@@ -128,6 +132,7 @@
         }
       }
       store.set(KEY.version, res.version || '');
+      applyRole(res);
       const hadPins = state.places.some(hasPos);
       let list = res.places;
       for (const op of state.pending) list = applyOp(list, op); // 아직 못 보낸 변경 유지
@@ -144,6 +149,17 @@
     } finally {
       pulling = false;
     }
+  }
+
+  function applyRole(res) {
+    if (!res.role) return;
+    const changed = res.role !== cfg.role || (res.viewToken || '') !== cfg.viewToken;
+    cfg.role = res.role;
+    cfg.viewToken = res.viewToken || '';
+    if (!changed) return;
+    store.set(KEY.cfg, cfg);
+    document.body.classList.toggle('readonly', !canEdit());
+    if (!canEdit()) { state.pending = []; store.set(KEY.pending, []); }
   }
 
   // 다른 기기의 변경을 받아 왔을 때 열려 있는 상세/목록을 새로 그린다 (편집 중인 폼은 건드리지 않음)
@@ -387,7 +403,8 @@
   function showDetail(p) {
     const r = ratingOf(p.rating), c = categoryOf(p.category), ys = years(p);
     let notice = '';
-    if (!hasPos(p)) notice = `<div class="notice"><span>📍 아직 지도 위치가 없어요</span><button class="btn small" data-act="find">이름으로 찾기</button><button class="btn small" data-act="move">지도에서 지정</button></div>`;
+    if (!canEdit()) notice = '';
+    else if (!hasPos(p)) notice = `<div class="notice"><span>📍 아직 지도 위치가 없어요</span><button class="btn small" data-act="find">이름으로 찾기</button><button class="btn small" data-act="move">지도에서 지정</button></div>`;
     else if (p.approx === 'auto') notice = `<div class="notice"><span>📍 자동으로 찾은 위치예요. 맞나요?</span><button class="btn small" data-act="confirm">맞아요</button><button class="btn small" data-act="find">다시 찾기</button></div>`;
     else if (p.approx === 'city') notice = `<div class="notice"><span>📍 도시 중심에 대략 표시돼 있어요</span><button class="btn small" data-act="move">지도에서 지정</button></div>`;
 
@@ -401,8 +418,8 @@
         ${p.memo ? `<p class="d-memo">${esc(p.memo)}</p>` : ''}
         ${notice}
         <div class="actions">
-          <button class="btn primary" data-act="edit">편집</button>
-          ${!ys.includes(THIS_YEAR) && !p.closed ? `<button class="btn" data-act="visit">올해도 갔어요 +'${THIS_YEAR}</button>` : ''}
+          ${canEdit() ? '<button class="btn primary" data-act="edit">편집</button>' : ''}
+          ${canEdit() && !ys.includes(THIS_YEAR) && !p.closed ? `<button class="btn" data-act="visit">올해도 갔어요 +'${THIS_YEAR}</button>` : ''}
           ${linksFor(p)}
         </div>
       </div>`, 'detail');
@@ -544,18 +561,18 @@
     const assign = state.assignTo && byId(state.assignTo);
     const mine = assign ? [] : localMatches(q);
     const opts = map ? { location: map.getCenter() } : {};
-    const kakaoRes = map ? await keywordSearch(q, opts) : [];
+    const kakaoRes = map && canEdit() ? await keywordSearch(q, opts) : [];
     const saved = new Map(state.places.filter(p => p.placeId).map(p => [p.placeId, p]));
 
     openSheet(`
       ${assign ? `<h3>'${esc(assign.name)}' 위치 고르기</h3>` : `<h3>'${esc(q)}' 검색</h3>`}
       ${mine.length ? `<p class="sec-title">내 맛집 ${mine.length}</p><ul class="items" data-sec="mine">${mine.map(itemHtml).join('')}</ul>` : ''}
-      <p class="sec-title">카카오맵 장소 ${kakaoRes.length}</p>
+      ${!canEdit() ? (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>') : `<p class="sec-title">카카오맵 장소 ${kakaoRes.length}</p>
       ${kakaoRes.length ? `<ul class="items" data-sec="kakao">${kakaoRes.map((r, i) => `
         <li data-i="${i}"><div class="em">${saved.has(r.id) ? '✅' : '📍'}</div>
           <div class="tx"><div class="nm">${esc(r.place_name)}</div><div class="sb">${esc(r.category_name.split(' > ').slice(1).join(' › ') || r.category_group_name)} · ${esc(r.road_address_name || r.address_name)}</div></div>
           <div class="rt">${saved.has(r.id) ? '저장됨' : (assign ? '선택' : '추가')}</div></li>`).join('')}</ul>`
-        : `<p class="empty">결과가 없어요. 동네 이름을 붙여 보세요 (예: "효자동 담박집")</p>`}`, 'search');
+        : `<p class="empty">결과가 없어요. 동네 이름을 붙여 보세요 (예: "효자동 담박집")</p>`}`}`, 'search');
 
     $('#sheetBody').onclick = async e => {
       const li = e.target.closest('li');
@@ -606,7 +623,7 @@
     openSheet(`
       <div class="list-head"><h3>내 맛집 ${list.length}곳</h3>
         <div class="sorts">${[['rating', '등급순'], ['recent', '최근 방문'], ['dist', '가까운 순']].map(([k, l]) => `<button data-sort="${k}" class="${s === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      ${noPos ? `<div class="notice"><span>📍 위치가 없는 곳이 ${noPos}곳 있어요</span><button class="btn small" data-act="autolocate">자동으로 찾기</button></div>` : ''}
+      ${noPos && canEdit() ? `<div class="notice"><span>📍 위치가 없는 곳이 ${noPos}곳 있어요</span><button class="btn small" data-act="autolocate">자동으로 찾기</button></div>` : ''}
       ${list.length ? `<ul class="items">${list.map(itemHtml).join('')}</ul>` : `<p class="empty">조건에 맞는 맛집이 없어요</p>`}`, 'list');
 
     $('#sheetBody').onclick = e => {
@@ -677,9 +694,11 @@
 
   function openSettings(first = false) {
     const noPos = state.places.filter(p => !hasPos(p) && !isOverseas(p.region)).length;
+    const status = cfg.apiUrl ? (canEdit() ? '구글 시트 연동 중 · 편집 가능' : '공유받은 지도 · 보기 전용') : '로컬 모드 (이 기기에만 저장)';
+    const editor = canEdit();
     openModal(`
       <h3>설정</h3>
-      <p class="help">${first ? '카카오 지도 키를 넣으면 시작할 수 있어요. 시트 주소를 비워 두면 이 기기에만 저장돼요.' : `${state.places.length}곳 저장됨 · ${cfg.apiUrl ? '구글 시트 연동 중' : '로컬 모드 (이 기기에만 저장)'}`}</p>
+      <p class="help">${first ? '카카오 지도 키를 넣으면 시작할 수 있어요. 시트 주소를 비워 두면 이 기기에만 저장돼요.' : `${state.places.length}곳 · ${status}`}</p>
       <form id="cfgForm">
         <label class="field"><span>카카오 JavaScript 키</span><input name="kakaoKey" value="${esc(cfg.kakaoKey)}" placeholder="developers.kakao.com → 내 애플리케이션 → 앱 키"></label>
         <label class="field"><span>구글 시트 Apps Script 웹앱 URL</span><input name="apiUrl" value="${esc(cfg.apiUrl)}" placeholder="https://script.google.com/macros/s/…/exec"></label>
@@ -688,10 +707,11 @@
       </form>
       <hr>
       <div class="stack">
-        <button class="btn" data-act="import">📋 메모장 내용 가져오기</button>
-        ${noPos ? `<button class="btn" data-act="autolocate">📍 위치 없는 ${noPos}곳 자동으로 찾기</button>` : ''}
+        ${editor ? '<button class="btn" data-act="import">📋 메모장 내용 가져오기</button>' : ''}
+        ${noPos && editor ? `<button class="btn" data-act="autolocate">📍 위치 없는 ${noPos}곳 자동으로 찾기</button>` : ''}
         ${cfg.apiUrl ? '<button class="btn" data-act="pull">🔄 시트에서 다시 불러오기</button>' : ''}
-        <button class="btn" data-act="share">🔗 다른 기기용 설정 링크 복사</button>
+        ${cfg.apiUrl && editor ? '<button class="btn" data-act="share-edit">✏️ 편집용 링크 복사 <small>— 배우자처럼 같이 고칠 사람</small></button>' : ''}
+        ${cfg.apiUrl && (cfg.viewToken || !editor) ? '<button class="btn" data-act="share-view">👀 보기 전용 링크 복사 <small>— 구경만 할 친구</small></button>' : ''}
         <button class="btn" data-act="export">💾 JSON 백업 내려받기</button>
       </div>`, body => {
       const form = $('#cfgForm', body);
@@ -703,7 +723,7 @@
         Object.assign(cfg, { kakaoKey: fd.get('kakaoKey').trim(), apiUrl: fd.get('apiUrl').trim(), token: fd.get('token').trim() });
         store.set(KEY.cfg, cfg);
         closeModal();
-        if (apiChanged) store.set(KEY.version, '');
+        if (apiChanged) { store.set(KEY.version, ''); cfg.role = 'edit'; cfg.viewToken = ''; store.set(KEY.cfg, cfg); }
         if (keyChanged || !map) return location.reload();
         if (apiChanged) pull();
         toast('저장했어요');
@@ -715,7 +735,8 @@
         if (act === 'autolocate') { closeModal(); autoLocate(); }
         if (act === 'pull') { closeModal(); pull(); }
         if (act === 'export') exportJson();
-        if (act === 'share') shareLink();
+        if (act === 'share-edit') shareLink('edit');
+        if (act === 'share-view') shareLink('view');
       };
     });
   }
@@ -763,11 +784,15 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
-  // 설정을 해시에 담은 링크 — 폰이나 배우자 기기에서 열면 설정이 자동 입력된다
-  async function shareLink() {
-    const payload = btoa(unescape(encodeURIComponent(JSON.stringify({ k: cfg.kakaoKey, u: cfg.apiUrl, t: cfg.token }))));
+  // 설정을 해시에 담은 링크 — 열면 시트 URL·토큰이 자동 입력된다.
+  // 편집용은 편집 토큰, 보기 전용은 보기 토큰을 담는다 (보기 토큰으로는 시트가 쓰기를 거부)
+  async function shareLink(kind) {
+    const token = kind === 'view' ? (canEdit() ? cfg.viewToken : cfg.token) : cfg.token;
+    if (!token) return toast('보기 전용 토큰이 아직 없어요. 시트에서 다시 불러온 뒤 시도해 주세요');
+    const payload = btoa(unescape(encodeURIComponent(JSON.stringify({ u: cfg.apiUrl, t: token, r: kind }))));
     const url = `${location.origin}${location.pathname}#cfg=${payload}`;
-    try { await navigator.clipboard.writeText(url); toast('링크를 복사했어요. 토큰이 들어 있으니 믿을 수 있는 사람에게만 보내세요', 4000); }
+    const msg = kind === 'view' ? '보기 전용 링크를 복사했어요. 받은 사람은 구경만 할 수 있어요' : '편집용 링크를 복사했어요. 받은 사람은 추가·수정·삭제를 할 수 있으니 믿을 수 있는 사람에게만 보내세요';
+    try { await navigator.clipboard.writeText(url); toast(msg, 4500); }
     catch { prompt('이 링크를 복사하세요', url); }
   }
 
@@ -777,8 +802,14 @@
     try {
       const c = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
       if (c.k) cfg.kakaoKey = c.k;
-      if (c.u) cfg.apiUrl = c.u;
-      if (c.t) cfg.token = c.t;
+      if (c.u && c.t) {
+        if (c.u !== cfg.apiUrl || c.t !== cfg.token) {
+          // 다른 지도로 바뀜 → 이전 지도의 캐시를 비운다
+          state.places = []; state.pending = [];
+          store.set(KEY.places, []); store.set(KEY.pending, []); store.set(KEY.version, '');
+        }
+        Object.assign(cfg, { apiUrl: c.u, token: c.t, role: c.r === 'view' ? 'view' : 'edit', viewToken: '' });
+      }
       store.set(KEY.cfg, cfg);
     } catch { /* 잘못된 링크 */ }
     history.replaceState(null, '', location.pathname + location.search);
@@ -810,6 +841,7 @@
 
   async function boot() {
     readHashConfig();
+    document.body.classList.toggle('readonly', !canEdit());
     bindUi();
     renderChips();
     setSync(cfg.apiUrl ? 'busy' : '');
