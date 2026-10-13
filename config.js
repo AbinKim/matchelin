@@ -3,5 +3,5 @@
 window.APP_CONFIG = {
   kakaoKey: '5186a6b38051eecb3d02a58638e6c9e2',
   // 구글 지도 키 (해외 지도). 비워 두면 OpenStreetMap으로 보여 준다. 구글 콘솔에서 웹사이트 제한을 걸어 둘 것
-  googleKey: '',
+  googleKey: 'AIzaSyCQqNi6yxNwTn7LTqwigNZDU3iGLnePVZ4',
 };

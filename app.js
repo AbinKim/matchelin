@@ -469,7 +469,7 @@
         await loadAsset('script', { src: 'https://unpkg.com/@googlemaps/markerclusterer@2.5.3/dist/index.min.js' });
       },
       init(el) {
-        gm = new google.maps.Map(el, { center: { lat: 30, lng: 140 }, zoom: 3, minZoom: 2, mapId: 'DEMO_MAP_ID', disableDefaultUI: true, clickableIcons: false, gestureHandling: 'greedy' });
+        gm = new google.maps.Map(el, { center: { lat: 30, lng: 140 }, zoom: 3, minZoom: 1, mapId: 'DEMO_MAP_ID', disableDefaultUI: true, clickableIcons: false, gestureHandling: 'greedy' });
         gm.addListener('click', e => mapClicked(e.latLng.lat(), e.latLng.lng()));
         gm.addListener('zoom_changed', () => el.classList.toggle('show-labels', gm.getZoom() >= 15));
         clusterer = new markerClusterer.MarkerClusterer({
@@ -483,8 +483,8 @@
         clusterer.clearMarkers();
         markers.clear();
         clusterer.addMarkers(list.map(p => {
-          const { mk, el } = marker(p, p.id === state.selected ? 'sel' : '', { zIndex: p.id === state.selected ? 1000 : zOf(p) });
-          mk.addListener('click', () => { if (!state.pick) select(p.id); });
+          const { mk, el } = marker(p, p.id === state.selected ? 'sel' : '', { zIndex: p.id === state.selected ? 1000 : zOf(p), gmpClickable: true });
+          mk.addEventListener('gmp-click', () => { if (!state.pick) select(p.id); });
           markers.set(p.id, { mk, el, p });
           return mk;
         }));
@@ -564,11 +564,13 @@
   let W = null, worldLoading = null;
   function ensureWorld() {
     worldLoading = worldLoading || (async () => {
-      const el = $('#wmap');
-      el.hidden = false;
+      // 구글 지도는 붙는 요소의 position을 덮어쓰므로 #wmap 안의 상자에 붙인다
+      $('#wmap').hidden = false;
+      $('#wmap').innerHTML = '<div class="engine"></div>';
+      const el = $('#wmap .engine');
       if (GOOGLE_KEY) {
         try { const g = googleEngine(GOOGLE_KEY); await g.load(); g.init(el); return (W = g); }
-        catch (e) { console.warn(e); toast('구글 지도를 불러오지 못해서 OpenStreetMap으로 보여 드려요', 4000); el.innerHTML = ''; }
+        catch (e) { console.warn(e); toast('구글 지도를 불러오지 못해서 OpenStreetMap으로 보여 드려요', 4000); el.innerHTML = ''; el.removeAttribute('style'); }
       }
       const o = osmEngine();
       await o.load();
