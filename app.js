@@ -768,14 +768,7 @@
       if (act === 'rate') showRate(p);
       if (act === 'confirm') { savePlace({ ...p, approx: '' }); select(p.id, { pan: false }); }
       if (act === 'find') startAssignSearch(p);
-      if (act === 'move') {
-        if (isOverseas(p.region) !== state.world) setWorld(isOverseas(p.region), { fit: false }).then(() => focusOn(p));
-        startPick(`'${p.name}' 위치를 지도에서 탭하세요`, async (lat, lng) => {
-          const info = await describeCoord(lat, lng);
-          savePlace({ ...p, lat, lng, approx: '', address: info.address || p.address });
-          select(p.id, { pan: false });
-        }, () => select(p.id, { pan: false }));
-      }
+      if (act === 'move') pickLocation(p);
     };
   }
 
@@ -806,6 +799,18 @@
       if (act === 'unrate') { savePlace(withHistory(p, h.filter(x => x.y !== THIS_YEAR))); return select(p.id, { pan: false }); }
       if (act === 'back') select(p.id, { pan: false });
     };
+  }
+
+  // 맛집 하나의 위치를 지도 탭으로 지정
+  function pickLocation(p) {
+    state.assignTo = null;
+    if (isOverseas(p.region) !== state.world) setWorld(isOverseas(p.region), { fit: false }).then(() => focusOn(p));
+    else if (hasPos(p)) focusOn(p);
+    startPick(`'${p.name}' 위치를 지도에서 탭하세요`, async (lat, lng) => {
+      const info = await describeCoord(lat, lng);
+      savePlace({ ...p, lat, lng, approx: '', address: info.address || p.address });
+      select(p.id, { pan: false });
+    }, () => select(p.id, { pan: false }));
   }
 
   // ─────────────────────────── 편집 폼 ───────────────────────────
@@ -1024,11 +1029,19 @@
       results = await searchPlaces(q, { world, near: c ? { lat: c[0], lng: c[1] } : null });
     }
     openSheet(`
-      ${assign ? `<h3>'${esc(assign.name)}' 위치 고르기</h3>` : `<h3>'${esc(q)}' 검색</h3>`}
+      ${assign ? `<h3>'${esc(assign.name)}' 위치 고르기</h3>
+        <form id="assignForm" class="addbar" autocomplete="off"><input id="assignQ" type="search" value="${esc(q)}" enterkeyhint="search" aria-label="검색어"></form>
+        <p class="hint">못 찾으면 검색어를 바꿔 보세요 (예: 지점 이름, 동네 이름)</p>` : `<h3>'${esc(q)}' 검색</h3>`}
       ${mine.length ? `<p class="sec-title">내 맛집 ${mine.length}</p><ul class="items">${mine.map(itemHtml).join('')}</ul>` : ''}
-      ${canEdit() ? placeResultsHtml(results, { world, assign }) : (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>')}`, 'search');
+      ${canEdit() ? placeResultsHtml(results, { world, assign }) : (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>')}
+      ${assign ? '<button type="button" class="btn pick-btn" data-act="pick">📍 검색 말고 지도에서 직접 찍기</button>' : ''}`, 'search');
+    if (assign) {
+      // 위치 고르기 모드를 유지한 채 검색어만 바꿔 다시 찾는다
+      $('#assignForm').onsubmit = e => { e.preventDefault(); state.assignTo = assign.id; doSearch($('#assignQ').value); };
+    }
 
     $('#sheetBody').onclick = e => {
+      if (assign && e.target.closest('[data-act=pick]')) return pickLocation(assign);
       const li = e.target.closest('li');
       if (!li) return;
       if (li.dataset.id) return select(li.dataset.id);
