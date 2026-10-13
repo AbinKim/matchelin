@@ -1,5 +1,72 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#b3001b"/>
-  <path d="M256 92c-70 0-126 55-126 124 0 92 126 204 126 204s126-112 126-204c0-69-56-124-126-124z" fill="#fff"/>
-  <path d="M256 150l17 36 39 5-29 27 8 39-35-19-35 19 8-39-29-27 39-5z" fill="#b3001b"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d9f0e4"/><stop offset="1" stop-color="#bfe6d3"/>
+    </linearGradient>
+    <linearGradient id="bowl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f08a5d"/><stop offset="1" stop-color="#d9693f"/>
+    </linearGradient>
+    <clipPath id="r"><rect width="512" height="512" rx="114"/></clipPath>
+  </defs>
+  <g clip-path="url(#r)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <!-- 몸통 (복슬복슬) -->
+    <g fill="#fffaf2" stroke="#e9dcc8" stroke-width="6">
+      <circle cx="150" cy="470" r="70"/><circle cx="256" cy="450" r="90"/><circle cx="362" cy="470" r="70"/>
+    </g>
+    <g fill="#fffaf2"><circle cx="150" cy="470" r="67"/><circle cx="256" cy="450" r="87"/><circle cx="362" cy="470" r="67"/></g>
+    <!-- 목 -->
+    <rect x="206" y="270" width="100" height="140" rx="50" fill="#fffaf2"/>
+    <!-- 귀 -->
+    <g stroke="#e9dcc8" stroke-width="6">
+      <ellipse cx="160" cy="118" rx="26" ry="52" transform="rotate(-28 160 118)" fill="#fffaf2"/>
+      <ellipse cx="352" cy="118" rx="26" ry="52" transform="rotate(28 352 118)" fill="#fffaf2"/>
+    </g>
+    <ellipse cx="162" cy="122" rx="12" ry="32" transform="rotate(-28 162 122)" fill="#f7c6c7"/>
+    <ellipse cx="350" cy="122" rx="12" ry="32" transform="rotate(28 350 122)" fill="#f7c6c7"/>
+    <!-- 얼굴 -->
+    <ellipse cx="256" cy="215" rx="112" ry="100" fill="#fffaf2" stroke="#e9dcc8" stroke-width="6"/>
+    <!-- 머리 털뭉치 -->
+    <g fill="#fffaf2" stroke="#e9dcc8" stroke-width="6">
+      <circle cx="206" cy="122" r="34"/><circle cx="306" cy="122" r="34"/><circle cx="256" cy="104" r="40"/>
+    </g>
+    <g fill="#fffaf2"><circle cx="230" cy="135" r="30"/><circle cx="282" cy="135" r="30"/><circle cx="256" cy="140" r="30"/></g>
+    <!-- 눈 -->
+    <ellipse cx="208" cy="208" rx="15" ry="18" fill="#3b2f2a"/>
+    <ellipse cx="304" cy="208" rx="15" ry="18" fill="#3b2f2a"/>
+    <circle cx="213" cy="201" r="5.5" fill="#fff"/><circle cx="309" cy="201" r="5.5" fill="#fff"/>
+    <!-- 볼터치 -->
+    <ellipse cx="180" cy="250" rx="20" ry="12" fill="#f7b5b8" opacity=".75"/>
+    <ellipse cx="332" cy="250" rx="20" ry="12" fill="#f7b5b8" opacity=".75"/>
+    <!-- 주둥이 -->
+    <ellipse cx="256" cy="262" rx="46" ry="34" fill="#f3e6d3"/>
+    <path d="M244 250 q12 9 24 0" fill="#6b4f43"/>
+    <path d="M256 256 v10 M256 266 q-11 11 -20 3 M256 266 q11 11 20 3" stroke="#6b4f43" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <!-- 밥그릇 -->
+    <g>
+      <path d="M150 368 q106 -40 212 0" fill="#fff" stroke="#e7e7e7" stroke-width="4"/>
+      <ellipse cx="256" cy="330" rx="80" ry="22" fill="#000" opacity=".06"/>
+      <g fill="#fff" stroke="#e3d9ca" stroke-width="6">
+        <circle cx="190" cy="362" r="26"/><circle cx="230" cy="345" r="32"/><circle cx="276" cy="342" r="34"/><circle cx="320" cy="360" r="26"/>
+      </g>
+      <g fill="#fff">
+        <circle cx="190" cy="362" r="23"/><circle cx="230" cy="345" r="29"/><circle cx="276" cy="342" r="31"/><circle cx="320" cy="360" r="23"/>
+        <rect x="186" y="350" width="140" height="22"/>
+      </g>
+      <g stroke="#ece6da" stroke-width="4" stroke-linecap="round">
+        <path d="M222 340 l8 -4"/><path d="M268 330 l9 3"/><path d="M300 352 l6 -6"/><path d="M196 356 l7 3"/><path d="M248 356 l7 -3"/>
+      </g>
+      <path d="M140 372 h232 q-10 92 -116 92 q-106 0 -116 -92 z" fill="url(#bowl)"/>
+      <path d="M140 372 h232" stroke="#c45a33" stroke-width="8" stroke-linecap="round"/>
+      <path d="M176 410 q80 22 160 0" stroke="#fff" stroke-opacity=".55" stroke-width="7" fill="none" stroke-linecap="round"/>
+    </g>
+    <!-- 앞발 -->
+    <ellipse cx="146" cy="392" rx="26" ry="32" fill="#fffaf2" stroke="#e9dcc8" stroke-width="6"/>
+    <ellipse cx="366" cy="392" rx="26" ry="32" fill="#fffaf2" stroke="#e9dcc8" stroke-width="6"/>
+    <!-- 김 -->
+    <g stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round" opacity=".9">
+      <path d="M396 300 q-14 -18 0 -36 q14 -18 0 -36"/>
+      <path d="M428 318 q-12 -15 0 -30 q12 -15 0 -30"/>
+    </g>
+  </g>
 </svg>

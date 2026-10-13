@@ -3,8 +3,8 @@
   "short_name": "맛슐랭",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#b3001b",
+  "background_color": "#d9f0e4",
+  "theme_color": "#d9f0e4",
   "icons": [
     { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
