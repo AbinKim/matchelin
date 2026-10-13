@@ -143,6 +143,11 @@ body.picking #map { cursor: crosshair; }
 .form-actions .primary { flex: 1; }
 
 /* 목록·검색 */
+.addbar input { width: 100%; border: 1.5px solid var(--ink); border-radius: 12px; padding: 11px 13px; font-size: 16px; background: var(--bg); outline: 0; margin-bottom: 4px; }
+.pick-btn { width: 100%; margin-top: 14px; }
+@media (max-width: 819px) {
+  .sheet[data-kind="add"] { top: calc(var(--safe-t) + 12px); max-height: none; border-radius: 18px 18px 0 0; }
+}
 .list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .list-head h3 { margin: 0; }
 .sorts { display: flex; gap: 4px; }

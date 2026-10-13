@@ -32,8 +32,6 @@
 
   let map, clusterer, placesSvc, geocoder, draftOverlay, meOverlay;
   const overlays = new Map(); // id → { ov, el }
-  let wmap, wcluster, wdraft, wme;
-  const wmarkers = new Map(); // id → { m, p }
 
   const byId = id => state.places.find(p => p.id === id);
   const hasPos = p => p && p.lat != null && p.lng != null && p.lat !== '' && !Number.isNaN(+p.lat);
@@ -286,14 +284,14 @@
 
   function highlight(id) {
     overlays.forEach(({ ov, el, p }, k) => { el.classList.toggle('sel', k === id); ov.setZIndex(k === id ? 100 : zOf(p)); });
-    wmarkers.forEach(({ m, p }, k) => { m.setIcon(wIcon(p, k === id ? 'sel' : '')); m.setZIndexOffset(k === id ? 1000 : zOf(p)); });
+    if (W) W.highlight(id);
   }
 
   function showDraftPin(d) {
     clearDraft();
     if (!hasPos(d)) return;
     if (isOverseas(d.region) || state.world) {
-      if (wmap) wdraft = L.marker([d.lat, d.lng], { icon: wIcon(d, 'draft sel'), interactive: false, zIndexOffset: 2000 }).addTo(wmap);
+      if (W) W.draft(d);
       return;
     }
     draftOverlay = new kakao.maps.CustomOverlay({ position: LL(d.lat, d.lng), content: pinEl(d, 'draft sel'), yAnchor: 1, zIndex: 200 });
@@ -301,7 +299,7 @@
   }
   function clearDraft() {
     if (draftOverlay) { draftOverlay.setMap(null); draftOverlay = null; }
-    if (wdraft) { wdraft.remove(); wdraft = null; }
+    if (W) W.clearDraft();
   }
 
   function focusOn(p) {
@@ -320,7 +318,7 @@
 
   // 좌표 → { region: '대전', area: '봉명동', address }
   function describeCoord(lat, lng) {
-    if (state.world) return describeWorld(lat, lng);
+    if (state.world && W) return W.describe(lat, lng);
     const region = new Promise(res => geocoder.coord2RegionCode(lng, lat, (r, st) => {
       if (st !== kakao.maps.services.Status.OK) return res({});
       const b = r.find(x => x.region_type === 'B') || r[0];
@@ -343,10 +341,16 @@
     return new Promise(res => placesSvc.keywordSearch(q, (data, st) => res(st === kakao.maps.services.Status.OK ? data : []), opts));
   }
 
-  // ─────────────────────────── 해외 지도 (OpenStreetMap) ───────────────────────────
-  // 카카오맵은 해외를 그리지 않아서 해외 맛집은 Leaflet + OpenStreetMap 타일로 보여 주고,
-  // 장소 검색은 Photon(OpenStreetMap 기반, 키 없음)을 쓴다. 처음 해외를 열 때만 불러온다.
+  // ─────────────────────────── 해외 지도 ───────────────────────────
+  // 카카오맵은 해외를 그리지 않는다. 해외 맛집은 config.js에 구글 키가 있으면 구글맵,
+  // 없으면 OpenStreetMap(Leaflet + Photon 검색)으로 보여 준다. 두 엔진은 같은 메서드를 가진다.
   const COUNTRY_KO = { US: '미국', JP: '일본', VN: '베트남', CN: '중국', TW: '대만', TH: '태국', HK: '홍콩', SG: '싱가포르', PH: '필리핀', FR: '프랑스', IT: '이탈리아', ES: '스페인', GB: '영국', DE: '독일', AU: '호주', CA: '캐나다' };
+  const GOOGLE_KEY = (window.APP_CONFIG || {}).googleKey || '';
+  const isFoodType = t => /restaurant|food|cafe|bar|pub|bakery|meal|biergarten|ice_cream/.test(t || '');
+  const panOffset = () => {
+    const wide = window.innerWidth >= 820;
+    return { x: wide ? -190 : 0, y: wide ? 0 : Math.round(window.innerHeight * 0.22) };
+  };
 
   function loadAsset(tag, attrs) {
     return new Promise((resolve, reject) => {
@@ -358,85 +362,78 @@
     });
   }
 
-  let leafletReady;
-  function loadLeaflet() {
-    leafletReady = leafletReady || (async () => {
-      const css = href => loadAsset('link', { rel: 'stylesheet', href });
-      await Promise.all([
-        css('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'),
-        css('https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css'),
-        loadAsset('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js' }),
-      ]);
-      await loadAsset('script', { src: 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js' });
-    })();
-    return leafletReady;
+  function osmEngine() {
+    let m, cluster, draft, me;
+    const markers = new Map();
+    const icon = (p, extra = '') => L.divIcon({ html: pinEl(p, extra).outerHTML, className: 'wpin', iconSize: [34, 36], iconAnchor: [17, 36] });
+    return {
+      name: 'osm',
+      async load() {
+        const css = href => loadAsset('link', { rel: 'stylesheet', href });
+        await Promise.all([
+          css('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'),
+          css('https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css'),
+          loadAsset('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js' }),
+        ]);
+        await loadAsset('script', { src: 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js' });
+      },
+      init(el) {
+        m = L.map(el, { zoomControl: false, attributionControl: false, worldCopyJump: true, minZoom: 2 }).setView([30, 140], 3);
+        L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(m);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }).addTo(m);
+        cluster = L.markerClusterGroup({
+          showCoverageOnHover: false, maxClusterRadius: 40, spiderfyOnMaxZoom: true, disableClusteringAtZoom: 12,
+          iconCreateFunction: c => L.divIcon({ html: `<div class="wcluster">${c.getChildCount()}</div>`, className: '', iconSize: [38, 38] }),
+        });
+        m.addLayer(cluster);
+        m.on('click', e => mapClicked(e.latlng.lat, e.latlng.lng));
+        m.on('zoomend', () => el.classList.toggle('show-labels', m.getZoom() >= 15));
+      },
+      resize() { m.invalidateSize(); },
+      render(list) {
+        cluster.clearLayers();
+        markers.clear();
+        cluster.addLayers(list.map(p => {
+          const mk = L.marker([+p.lat, +p.lng], { icon: icon(p, p.id === state.selected ? 'sel' : ''), zIndexOffset: p.id === state.selected ? 1000 : zOf(p) });
+          mk.on('click', () => { if (!state.pick) select(p.id); });
+          markers.set(p.id, { mk, p });
+          return mk;
+        }));
+      },
+      highlight(id) { markers.forEach(({ mk, p }, k) => { mk.setIcon(icon(p, k === id ? 'sel' : '')); mk.setZIndexOffset(k === id ? 1000 : zOf(p)); }); },
+      draft(d) { draft = L.marker([+d.lat, +d.lng], { icon: icon(d, 'draft sel'), interactive: false, zIndexOffset: 2000 }).addTo(m); },
+      clearDraft() { if (draft) { draft.remove(); draft = null; } },
+      focus(p, minZoom) {
+        const z = Math.max(m.getZoom(), minZoom), o = panOffset();
+        m.setView(m.unproject(m.project([+p.lat, +p.lng], z).add(L.point(o.x, o.y)), z), z);
+      },
+      fit(pts) { m.fitBounds(L.latLngBounds(pts.map(p => [+p.lat, +p.lng])), { padding: [70, 50], maxZoom: 14 }); },
+      me(pos, pan) {
+        const at = [pos.lat, pos.lng];
+        if (!me) me = L.marker(at, { icon: L.divIcon({ html: '<div class="me"></div>', className: 'wpin', iconSize: [22, 22] }), interactive: false, zIndexOffset: 3000 }).addTo(m);
+        else me.setLatLng(at);
+        if (pan) m.setView(at, 15);
+      },
+      center() { const c = m.getCenter(); return { lat: c.lat, lng: c.lng }; },
+      async search(q, near) {
+        const c = near || (m ? this.center() : null);
+        try {
+          const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10${c ? `&lat=${c.lat}&lon=${c.lng}` : ''}`);
+          return ((await r.json()).features || []).map(fromPhoton).filter(x => x.name);
+        } catch { return []; }
+      },
+      async describe(lat, lng) {
+        try {
+          const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`);
+          const f = ((await r.json()).features || [])[0];
+          if (!f) return { region: '', area: '', address: '' };
+          const x = fromPhoton(f);
+          return { region: x.country, area: x.city, address: x.address };
+        } catch { return { region: '', area: '', address: '' }; }
+      },
+    };
   }
 
-  async function setWorld(on, { fit = true } = {}) {
-    if (on && !wmap) {
-      try { await loadLeaflet(); } catch { leafletReady = null; toast('해외 지도를 불러오지 못했어요. 인터넷 연결을 확인해 주세요'); return; }
-    }
-    const changed = state.world !== on;
-    state.world = on;
-    document.body.classList.toggle('world', on);
-    $('#wmap').hidden = !on;
-    if (on) {
-      if (!wmap) initWorldMap();
-      wmap.invalidateSize();
-      renderWorldMarkers();
-      if (fit && changed) fitWorld();
-    }
-    renderChips();
-  }
-
-  function initWorldMap() {
-    wmap = L.map('wmap', { zoomControl: false, attributionControl: false, worldCopyJump: true, minZoom: 2 }).setView([30, 140], 3);
-    L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(wmap);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(wmap);
-    wcluster = L.markerClusterGroup({
-      showCoverageOnHover: false, maxClusterRadius: 40, spiderfyOnMaxZoom: true, disableClusteringAtZoom: 12,
-      iconCreateFunction: c => L.divIcon({ html: `<div class="wcluster">${c.getChildCount()}</div>`, className: '', iconSize: [38, 38] }),
-    });
-    wmap.addLayer(wcluster);
-    wmap.on('click', e => mapClicked(e.latlng.lat, e.latlng.lng));
-    wmap.on('zoomend', () => $('#wmap').classList.toggle('show-labels', wmap.getZoom() >= 15));
-  }
-
-  const wIcon = (p, extra = '') => L.divIcon({ html: pinEl(p, extra).outerHTML, className: 'wpin', iconSize: [34, 36], iconAnchor: [17, 36] });
-
-  function renderWorldMarkers() {
-    if (!wmap) return;
-    wcluster.clearLayers();
-    wmarkers.clear();
-    const ms = [];
-    for (const p of state.places) {
-      if (!hasPos(p) || !matches(p) || !isOverseas(p.region)) continue;
-      const m = L.marker([+p.lat, +p.lng], { icon: wIcon(p, p.id === state.selected ? 'sel' : ''), zIndexOffset: p.id === state.selected ? 1000 : zOf(p) });
-      m.on('click', () => { if (!state.pick) select(p.id); });
-      wmarkers.set(p.id, { m, p });
-      ms.push(m);
-    }
-    wcluster.addLayers(ms);
-  }
-
-  function fitWorld(list) {
-    const pts = (list || state.places.filter(p => matches(p) && isOverseas(p.region))).filter(hasPos);
-    if (!pts.length) return;
-    wmap.fitBounds(L.latLngBounds(pts.map(p => [+p.lat, +p.lng])), { padding: [70, 50], maxZoom: 14 });
-  }
-
-  function focusWorld(p) {
-    if (!wmap) return;
-    const z = Math.max(wmap.getZoom(), p.approx === 'city' ? 12 : 16);
-    const wide = window.innerWidth >= 820;
-    const pt = wmap.project([+p.lat, +p.lng], z).add(L.point(wide ? -190 : 0, wide ? 0 : Math.round(window.innerHeight * 0.22)));
-    wmap.setView(wmap.unproject(pt, z), z);
-  }
-
-  // Photon 결과 → 검색 목록 공통 형태
   function fromPhoton(f) {
     const pr = f.properties, [lng, lat] = f.geometry.coordinates;
     const street = [pr.housenumber, pr.street].filter(Boolean).join(' ');
@@ -445,28 +442,157 @@
       address: [street, pr.city || pr.county, pr.state, pr.country].filter(Boolean).join(', '),
       sub: [pr.osm_value, pr.city || pr.state, pr.country].filter(Boolean).join(' · '),
       cat: `${pr.osm_value || ''} ${pr.name || ''}`, country: COUNTRY_KO[pr.countrycode] || pr.country || '', city: pr.city || pr.county || pr.state || '',
-      food: /^(restaurant|fast_food|cafe|bar|pub|food_court|ice_cream|biergarten)$/.test(pr.osm_value || ''),
+      food: isFoodType(pr.osm_value),
     };
   }
 
-  async function photonSearch(q, near) {
-    const c = near || (wmap ? wmap.getCenter() : null);
-    const bias = c ? `&lat=${c.lat}&lon=${c.lng}` : '';
-    try {
-      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10${bias}`);
-      return ((await r.json()).features || []).map(fromPhoton).filter(x => x.name);
-    } catch { return []; }
+  function googleEngine(key) {
+    let gm, clusterer, draft, me;
+    const markers = new Map();
+    const marker = (p, extra, opts = {}) => {
+      const el = pinEl(p, extra);
+      const mk = new google.maps.marker.AdvancedMarkerElement({ position: { lat: +p.lat, lng: +p.lng }, content: el, ...opts });
+      return { mk, el };
+    };
+    const clusterEl = n => { const el = document.createElement('div'); el.className = 'wcluster'; el.textContent = n; return el; };
+    const comp = (list, type, field) => { const c = (list || []).find(x => x.types.includes(type)); return c ? c[field] : ''; };
+    return {
+      name: 'google',
+      async load() {
+        await new Promise((resolve, reject) => {
+          window.__gmReady = resolve;
+          window.gm_authFailure = () => reject(new Error('google auth'));
+          loadAsset('script', { src: `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&callback=__gmReady` }).catch(reject);
+        });
+        await Promise.all(['maps', 'marker', 'places', 'geocoding'].map(l => google.maps.importLibrary(l)));
+        await loadAsset('script', { src: 'https://unpkg.com/@googlemaps/markerclusterer@2.5.3/dist/index.min.js' });
+      },
+      init(el) {
+        gm = new google.maps.Map(el, { center: { lat: 30, lng: 140 }, zoom: 3, minZoom: 2, mapId: 'DEMO_MAP_ID', disableDefaultUI: true, clickableIcons: false, gestureHandling: 'greedy' });
+        gm.addListener('click', e => mapClicked(e.latLng.lat(), e.latLng.lng()));
+        gm.addListener('zoom_changed', () => el.classList.toggle('show-labels', gm.getZoom() >= 15));
+        clusterer = new markerClusterer.MarkerClusterer({
+          map: gm,
+          algorithm: new markerClusterer.SuperClusterAlgorithm({ maxZoom: 11, radius: 60 }),
+          renderer: { render: ({ count, position }) => new google.maps.marker.AdvancedMarkerElement({ position, content: clusterEl(count), zIndex: 1000 + count }) },
+        });
+      },
+      resize() {},
+      render(list) {
+        clusterer.clearMarkers();
+        markers.clear();
+        clusterer.addMarkers(list.map(p => {
+          const { mk, el } = marker(p, p.id === state.selected ? 'sel' : '', { zIndex: p.id === state.selected ? 1000 : zOf(p) });
+          mk.addListener('click', () => { if (!state.pick) select(p.id); });
+          markers.set(p.id, { mk, el, p });
+          return mk;
+        }));
+      },
+      highlight(id) { markers.forEach(({ mk, el, p }, k) => { el.classList.toggle('sel', k === id); mk.zIndex = k === id ? 1000 : zOf(p); }); },
+      draft(d) { draft = marker(d, 'draft sel', { map: gm, zIndex: 2000 }).mk; },
+      clearDraft() { if (draft) { draft.map = null; draft = null; } },
+      focus(p, minZoom) {
+        const o = panOffset();
+        gm.setZoom(Math.max(gm.getZoom(), minZoom));
+        gm.setCenter({ lat: +p.lat, lng: +p.lng });
+        gm.panBy(o.x, o.y);
+      },
+      fit(pts) {
+        const b = new google.maps.LatLngBounds();
+        pts.forEach(p => b.extend({ lat: +p.lat, lng: +p.lng }));
+        gm.fitBounds(b, 60);
+        google.maps.event.addListenerOnce(gm, 'idle', () => { if (gm.getZoom() > 14) gm.setZoom(14); });
+      },
+      me(pos, pan) {
+        if (!me) { const el = document.createElement('div'); el.className = 'me'; me = new google.maps.marker.AdvancedMarkerElement({ map: gm, position: pos, content: el, zIndex: 3000 }); }
+        else me.position = pos;
+        if (pan) { gm.setZoom(15); gm.setCenter(pos); }
+      },
+      center() { const c = gm.getCenter(); return { lat: c.lat(), lng: c.lng() }; },
+      async search(q, near) {
+        const c = near || (gm ? this.center() : null);
+        try {
+          const { places } = await google.maps.places.Place.searchByText({
+            textQuery: q, maxResultCount: 10,
+            fields: ['id', 'displayName', 'formattedAddress', 'location', 'types', 'primaryTypeDisplayName', 'addressComponents'],
+            ...(c ? { locationBias: { center: c, radius: 50000 } } : {}),
+          });
+          return places.map(pl => {
+            const ac = (pl.addressComponents || []).map(x => ({ types: x.types, long: x.longText, short: x.shortText }));
+            const types = (pl.types || []).join(' ');
+            return {
+              id: `g:${pl.id}`, name: pl.displayName || '', lat: pl.location.lat(), lng: pl.location.lng(), address: pl.formattedAddress || '',
+              sub: [pl.primaryTypeDisplayName, pl.formattedAddress].filter(Boolean).join(' · '),
+              cat: `${types} ${pl.primaryTypeDisplayName || ''} ${pl.displayName || ''}`,
+              country: COUNTRY_KO[comp(ac, 'country', 'short')] || comp(ac, 'country', 'long'),
+              city: comp(ac, 'locality', 'long') || comp(ac, 'administrative_area_level_2', 'long') || comp(ac, 'administrative_area_level_1', 'long'),
+              food: isFoodType(types),
+            };
+          }).filter(x => x.name);
+        } catch (e) { console.warn('google search', e); return []; }
+      },
+      async describe(lat, lng) {
+        try {
+          const { results } = await new google.maps.Geocoder().geocode({ location: { lat, lng } });
+          const r = results[0];
+          if (!r) return { region: '', area: '', address: '' };
+          const ac = r.address_components.map(x => ({ types: x.types, long: x.long_name, short: x.short_name }));
+          return {
+            region: COUNTRY_KO[comp(ac, 'country', 'short')] || comp(ac, 'country', 'long'),
+            area: comp(ac, 'locality', 'long') || comp(ac, 'administrative_area_level_1', 'long'),
+            address: r.formatted_address,
+          };
+        } catch { return { region: '', area: '', address: '' }; }
+      },
+    };
   }
 
-  async function describeWorld(lat, lng) {
-    try {
-      const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`);
-      const f = ((await r.json()).features || [])[0];
-      if (!f) return { region: '', area: '', address: '' };
-      const x = fromPhoton(f);
-      return { region: x.country, area: x.city, address: x.address };
-    } catch { return { region: '', area: '', address: '' }; }
+  // 구글 키가 있으면 구글맵, 키 문제로 실패하면 OpenStreetMap으로 대신 연다
+  let W = null, worldLoading = null;
+  function ensureWorld() {
+    worldLoading = worldLoading || (async () => {
+      const el = $('#wmap');
+      el.hidden = false;
+      if (GOOGLE_KEY) {
+        try { const g = googleEngine(GOOGLE_KEY); await g.load(); g.init(el); return (W = g); }
+        catch (e) { console.warn(e); toast('구글 지도를 불러오지 못해서 OpenStreetMap으로 보여 드려요', 4000); el.innerHTML = ''; }
+      }
+      const o = osmEngine();
+      await o.load();
+      o.init(el);
+      return (W = o);
+    })().catch(e => { worldLoading = null; throw e; });
+    return worldLoading;
   }
+
+  async function setWorld(on, { fit = true } = {}) {
+    if (on && !W) {
+      try { await ensureWorld(); } catch { toast('해외 지도를 불러오지 못했어요. 인터넷 연결을 확인해 주세요'); $('#wmap').hidden = true; return; }
+    }
+    const changed = state.world !== on;
+    state.world = on;
+    document.body.classList.toggle('world', on);
+    $('#wmap').hidden = !on;
+    if (on) {
+      W.resize();
+      renderWorldMarkers();
+      if (fit && changed) fitWorld();
+    }
+    renderChips();
+  }
+
+  function renderWorldMarkers() {
+    if (W) W.render(state.places.filter(p => hasPos(p) && matches(p) && isOverseas(p.region)));
+  }
+
+  function fitWorld(list) {
+    const pts = (list || state.places.filter(p => matches(p) && isOverseas(p.region))).filter(hasPos);
+    if (W && pts.length) W.fit(pts);
+  }
+
+  function focusWorld(p) { if (W) W.focus(p, p.approx === 'city' ? 12 : 16); }
+
+  const worldSearch = (q, near) => ensureWorld().then(() => W.search(q, near), () => []);
 
   // ─────────────────────────── 필터 · 칩 ───────────────────────────
   function matches(p) {
@@ -518,7 +644,7 @@
 
   function zoomToRegion(province) {
     const pts = state.places.filter(p => provinceOf(p) === province && hasPos(p));
-    if (isOverseas(province)) return setWorld(true, { fit: false }).then(() => wmap && fitWorld(pts));
+    if (isOverseas(province)) return setWorld(true, { fit: false }).then(() => fitWorld(pts));
     if (state.world) setWorld(false);
     if (!pts.length || !map) return;
     const b = new kakao.maps.LatLngBounds();
@@ -562,7 +688,8 @@
   function linksFor(p) {
     if (isOverseas(p.region)) {
       const q = hasPos(p) && !p.approx ? `${p.name} ${p.address || ''}` : `${p.name} ${p.area}`;
-      return `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q.trim())}">구글 지도</a>`;
+      const pid = String(p.placeId || '').startsWith('g:') ? `&query_place_id=${encodeURIComponent(p.placeId.slice(2))}` : '';
+      return `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q.trim())}${pid}">구글 지도</a>`;
     }
     const view = p.placeId ? `https://place.map.kakao.com/${p.placeId}` : `https://map.kakao.com/link/search/${encodeURIComponent(`${p.area.split('/')[0]} ${p.name}`)}`;
     const route = hasPos(p) ? `<a class="btn" target="_blank" rel="noopener" href="https://map.kakao.com/link/to/${encodeURIComponent(p.name)},${p.lat},${p.lng}">길찾기</a>` : '';
@@ -749,12 +876,43 @@
     document.body.classList.remove('picking');
   }
 
+  // ＋ 버튼: 검색창이 바로 열리고 입력하는 대로 장소를 찾는다. 못 찾으면 지도에서 직접 찍기
   function startAdd() {
     closeSheet();
-    startPick(`추가할 가게 위치를 ${state.world ? '해외 ' : ''}지도에서 탭하세요 · 위 검색창에 가게 이름을 검색해도 돼요`, async (lat, lng) => {
+    const world = state.world;
+    const idle = `<p class="hint">${world ? '해외 가게 이름을 입력하세요 (영어·현지어도 돼요)' : '가게 이름을 입력하세요. 동네 이름을 붙이면 더 정확해요 (예: 효자동 담박집)'}</p>`;
+    openSheet(`
+      <h3>${world ? '🌏 해외 ' : ''}맛집 추가</h3>
+      <form id="addForm" class="addbar" autocomplete="off"><input id="addQ" type="search" placeholder="가게 이름" enterkeyhint="search"></form>
+      <div id="addResults">${idle}</div>
+      <button type="button" class="btn pick-btn" data-act="pick">📍 검색 말고 지도에서 직접 찍기</button>`, 'add');
+    const input = $('#addQ');
+    input.focus();
+    let timer, seq = 0, results = [];
+    const run = async () => {
+      const q = input.value.trim(), my = ++seq;
+      if (q.length < 2) { $('#addResults').innerHTML = idle; return; }
+      $('#addResults').innerHTML = '<p class="hint">찾는 중…</p>';
+      const res = await searchPlaces(q, { world });
+      if (my !== seq) return; // 더 최근 입력의 결과가 우선
+      results = res;
+      $('#addResults').innerHTML = placeResultsHtml(res, { world });
+    };
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, world ? 500 : 300); });
+    $('#addForm').onsubmit = e => { e.preventDefault(); clearTimeout(timer); input.blur(); run(); };
+    $('#sheetBody').onclick = e => {
+      if (e.target.closest('[data-act=pick]')) return startPickAdd();
+      const li = e.target.closest('li[data-i]');
+      if (li) useResult(results[+li.dataset.i], { world });
+    };
+  }
+
+  function startPickAdd() {
+    closeSheet();
+    startPick(`추가할 가게 위치를 ${state.world ? '해외 ' : ''}지도에서 탭하세요`, async (lat, lng) => {
       const info = await describeCoord(lat, lng);
       showForm(blank({ lat, lng, ...info }), true);
-    });
+    }, startAdd);
   }
 
   const blank = extra => ({ id: newId(), name: '', rating: 'bib', category: 'etc', region: '', area: '', menu: '', years: `${THIS_YEAR}:bib`, closed: false, lat: null, lng: null, address: '', placeId: '', approx: '', memo: '', ...extra });
@@ -782,6 +940,41 @@
     cat: `${r.category_name} ${r.place_name}`,
   });
 
+  // 장소 검색: 국내는 카카오, 해외는 구글/OpenStreetMap. 결과는 { id, name, lat, lng, address, sub, cat, country, city }
+  async function searchPlaces(q, { world, near } = {}) {
+    if (world) return worldSearch(q, near);
+    if (!map) return [];
+    return (await keywordSearch(q, { location: map.getCenter() })).map(fromKakao);
+  }
+
+  function placeResultsHtml(results, { world, assign }) {
+    const saved = new Map(state.places.filter(p => p.placeId).map(p => [p.placeId, p]));
+    const source = world ? `해외 장소 (${W && W.name === 'google' ? '구글' : 'OpenStreetMap'})` : '카카오맵 장소';
+    const hint = world ? '영어나 현지어 이름으로도 검색해 보세요. 못 찾으면 지도에서 직접 찍으면 돼요' : '동네 이름을 붙여 보세요 (예: "효자동 담박집")';
+    return `<p class="sec-title">${source} ${results.length}</p>` + (results.length
+      ? `<ul class="items">${results.map((r, i) => `
+        <li data-i="${i}"><div class="em">${saved.has(r.id) ? '✅' : '📍'}</div>
+          <div class="tx"><div class="nm">${esc(r.name)}</div><div class="sb">${esc(r.sub)}</div></div>
+          <div class="rt">${saved.has(r.id) ? '저장됨' : (assign ? '선택' : '추가')}</div></li>`).join('')}</ul>`
+      : `<p class="empty">결과가 없어요. ${hint}</p>`);
+  }
+
+  // 검색 결과 하나를 골랐을 때: 위치 지정 중이면 그 맛집에 좌표를, 아니면 새 맛집 등록 화면을 연다
+  async function useResult(r, { world, assign }) {
+    if (assign) {
+      state.assignTo = null;
+      savePlace({ ...assign, lat: r.lat, lng: r.lng, address: r.address, placeId: r.id, approx: '' });
+      return select(assign.id);
+    }
+    const saved = state.places.find(p => p.placeId === r.id);
+    if (saved) return select(saved.id);
+    const info = world ? { region: r.country, area: r.city } : await describeCoord(r.lat, r.lng);
+    const d = blank({ name: r.name, category: guessCategory(r.cat), region: info.region, area: info.area, address: r.address, placeId: r.id, lat: r.lat, lng: r.lng });
+    if (!world) map.setLevel(4);
+    focusOn(d);
+    showForm(d, true);
+  }
+
   async function doSearch(q) {
     q = q.trim();
     if (!q) return;
@@ -792,41 +985,19 @@
     const mine = assign ? [] : localMatches(q);
     let results = [];
     if (canEdit()) {
-      if (world) {
-        const c = assign && cityCoord(assign.area);
-        results = await photonSearch(q, c ? { lat: c[0], lng: c[1] } : null);
-      } else if (map) results = (await keywordSearch(q, { location: map.getCenter() })).map(fromKakao);
+      const c = assign && cityCoord(assign.area);
+      results = await searchPlaces(q, { world, near: c ? { lat: c[0], lng: c[1] } : null });
     }
-    const saved = new Map(state.places.filter(p => p.placeId).map(p => [p.placeId, p]));
-    const source = world ? '해외 장소 (OpenStreetMap)' : '카카오맵 장소';
-    const hint = world ? '영어나 현지어 이름으로 검색해 보세요. 못 찾으면 해외 지도에서 직접 탭해서 지정하면 돼요' : '동네 이름을 붙여 보세요 (예: "효자동 담박집")';
-
     openSheet(`
       ${assign ? `<h3>'${esc(assign.name)}' 위치 고르기</h3>` : `<h3>'${esc(q)}' 검색</h3>`}
-      ${mine.length ? `<p class="sec-title">내 맛집 ${mine.length}</p><ul class="items" data-sec="mine">${mine.map(itemHtml).join('')}</ul>` : ''}
-      ${!canEdit() ? (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>') : `<p class="sec-title">${source} ${results.length}</p>
-      ${results.length ? `<ul class="items" data-sec="places">${results.map((r, i) => `
-        <li data-i="${i}"><div class="em">${saved.has(r.id) ? '✅' : '📍'}</div>
-          <div class="tx"><div class="nm">${esc(r.name)}</div><div class="sb">${esc(r.sub)}</div></div>
-          <div class="rt">${saved.has(r.id) ? '저장됨' : (assign ? '선택' : '추가')}</div></li>`).join('')}</ul>`
-        : `<p class="empty">결과가 없어요. ${hint}</p>`}`}`, 'search');
+      ${mine.length ? `<p class="sec-title">내 맛집 ${mine.length}</p><ul class="items">${mine.map(itemHtml).join('')}</ul>` : ''}
+      ${canEdit() ? placeResultsHtml(results, { world, assign }) : (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>')}`, 'search');
 
-    $('#sheetBody').onclick = async e => {
+    $('#sheetBody').onclick = e => {
       const li = e.target.closest('li');
       if (!li) return;
       if (li.dataset.id) return select(li.dataset.id);
-      const r = results[+li.dataset.i];
-      if (assign) {
-        state.assignTo = null;
-        savePlace({ ...assign, lat: r.lat, lng: r.lng, address: r.address, placeId: r.id, approx: '' });
-        return select(assign.id);
-      }
-      if (saved.has(r.id)) return select(saved.get(r.id).id);
-      const info = world ? { region: r.country, area: r.city } : await describeCoord(r.lat, r.lng);
-      const d = blank({ name: r.name, category: guessCategory(r.cat), region: info.region, area: info.area, address: r.address, placeId: r.id, lat: r.lat, lng: r.lng });
-      if (!world) map.setLevel(4);
-      focusOn(d);
-      showForm(d, true);
+      useResult(results[+li.dataset.i], { world, assign });
     };
   }
 
@@ -881,11 +1052,9 @@
     if (!navigator.geolocation) return toast('이 브라우저는 위치를 지원하지 않아요');
     navigator.geolocation.getCurrentPosition(pos => {
       state.myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      if (state.world && wmap) {
-        const at = [state.myPos.lat, state.myPos.lng];
-        if (!wme) wme = L.marker(at, { icon: L.divIcon({ html: '<div class="me"></div>', className: 'wpin', iconSize: [22, 22] }), interactive: false, zIndexOffset: 3000 }).addTo(wmap);
-        else wme.setLatLng(at);
-        if (typeof then === 'function') then(); else wmap.setView(at, 15);
+      if (state.world && W) {
+        W.me(state.myPos, typeof then !== 'function');
+        if (typeof then === 'function') then();
         return;
       }
       const ll = LL(state.myPos.lat, state.myPos.lng);
@@ -914,7 +1083,7 @@
       if (isOverseas(p.region)) {
         // 도시 중심에서 50km 안의 결과만 인정 (같은 이름의 엉뚱한 곳 방지)
         const c = cityCoord(p.area) || [+p.lat, +p.lng];
-        const near = (await photonSearch(p.name, { lat: c[0], lng: c[1] })).filter(r => distKm({ lat: c[0], lng: c[1] }, r) < 50);
+        const near = (await worldSearch(p.name, { lat: c[0], lng: c[1] })).filter(r => distKm({ lat: c[0], lng: c[1] }, r) < 50);
         const pick = near.find(r => r.food) || near[0];
         if (pick) found.push({ ...p, lat: pick.lat, lng: pick.lng, address: pick.address, placeId: pick.id, approx: 'auto' });
         else failed.push(p.name);
