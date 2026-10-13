@@ -106,8 +106,8 @@
     return null;
   }
 
-  // "(24‘ 25’)" → "24 25"
-  function parseYears(s) { return (String(s || '').match(/\d{2}/g) || []).join(' '); }
+  // "(24‘ 25’)" → ['24', '25']  — 그 등급을 받은 연도들
+  function parseYears(s) { return String(s || '').match(/\d{2}/g) || []; }
 
   // 가게명 = 앞쪽 비한글 토큰들(영문·일본어 상호) 또는 첫 한글 토큰 + '…점' 지점 토큰
   function splitNameMenu(toks) {
@@ -122,9 +122,10 @@
     let s = line.trim();
     const closed = /[-–]\s*폐업\s*$/.test(s);
     s = s.replace(/[-–]\s*폐업\s*$/, '').trim();
+    // years = 연도별 등급 "24:2 25:2" (메모의 연도는 그 등급을 받은 해)
     let years = '';
     const ym = s.match(/\(([^()]*)\)\s*$/);
-    if (ym) { years = parseYears(ym[1]); s = s.slice(0, ym.index).trim(); }
+    if (ym) { years = parseYears(ym[1]).map(y => `${y}:${rating}`).join(' '); s = s.slice(0, ym.index).trim(); }
 
     const toks = s.split(/\s+/).filter(Boolean);
     const regionN = isOverseas(toks[0]) ? COUNTRIES[toks[0]] : 2;

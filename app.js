@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const { RATINGS, CATEGORIES, ratingOf, categoryOf, isOverseas, provinceOf, guessCategory, parseMemo, placeKey } = window.MemoParser;
+  const { RATINGS, CATEGORIES, ratingOf, categoryOf, isOverseas, provinceOf, cityCoord, guessCategory, parseMemo, placeKey } = window.MemoParser;
 
   const $ = (s, el = document) => el.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,14 +27,30 @@
     pick: null,       // 지도 탭으로 위치 고르는 중일 때의 콜백
     assignTo: null,   // 검색 결과를 이 맛집의 위치로 지정하는 중
     myPos: null,
+    world: false,     // true면 해외 지도(OpenStreetMap)를 보여 준다
   };
 
   let map, clusterer, placesSvc, geocoder, draftOverlay, meOverlay;
   const overlays = new Map(); // id → { ov, el }
+  let wmap, wcluster, wdraft, wme;
+  const wmarkers = new Map(); // id → { m, p }
 
   const byId = id => state.places.find(p => p.id === id);
   const hasPos = p => p && p.lat != null && p.lng != null && p.lat !== '' && !Number.isNaN(+p.lat);
-  const years = p => String(p.years || '').split(/[\s,]+/).filter(Boolean).sort();
+  // years 칸 = 연도별 등급 "23:bib 24:bib 25:1". 예전 형식 "23 24 25"는 모든 해에 현재 등급을 받은 것으로 본다
+  function history(p) {
+    const base = p.rating && p.rating !== 'wish' ? p.rating : 'bib';
+    const m = {};
+    String(p.years || '').split(/[\s,]+/).forEach(t => {
+      const x = t.match(/^'?(\d{2})(?::(3|2|1|bib))?$/);
+      if (x) m[x[1]] = x[2] || base;
+    });
+    return Object.keys(m).sort().map(y => ({ y, r: m[y] }));
+  }
+  const years = p => history(p).map(h => h.y);
+  // 등급은 항상 가장 최근 연도의 등급. 기록이 없으면 가볼곳
+  const withHistory = (p, h) => ({ ...p, years: h.map(x => `${x.y}:${x.r}`).join(' '), rating: h.length ? h[h.length - 1].r : 'wish' });
+  const RATED = RATINGS.filter(r => r.key !== 'wish');
   const LL = (lat, lng) => new kakao.maps.LatLng(+lat, +lng);
 
   // ─────────────────────────── 저장 · 동기화 ───────────────────────────
@@ -208,10 +224,7 @@
     placesSvc = new kakao.maps.services.Places();
     geocoder = new kakao.maps.services.Geocoder();
 
-    kakao.maps.event.addListener(map, 'click', e => {
-      if (state.pick) { const cb = state.pick.cb; endPick(); cb(e.latLng.getLat(), e.latLng.getLng()); }
-      else if (!$('#sheet').hidden && $('#sheet').dataset.kind !== 'form') closeSheet();
-    });
+    kakao.maps.event.addListener(map, 'click', e => mapClicked(e.latLng.getLat(), e.latLng.getLng()));
     kakao.maps.event.addListener(map, 'idle', () => {
       const c = map.getCenter();
       store.set(KEY.view, { lat: c.getLat(), lng: c.getLng(), level: map.getLevel() });
@@ -221,6 +234,11 @@
     renderAll();
     if (!v) fitAll();
     updateLabels();
+  }
+
+  function mapClicked(lat, lng) {
+    if (state.pick) { const cb = state.pick.cb; endPick(); cb(lat, lng); }
+    else if (!$('#sheet').hidden && $('#sheet').dataset.kind !== 'form') closeSheet();
   }
 
   function updateLabels() { $('#map').classList.toggle('show-labels', map.getLevel() <= 5); }
@@ -249,7 +267,7 @@
     overlays.clear();
     const ovs = [];
     for (const p of state.places) {
-      if (!hasPos(p) || !matches(p)) continue;
+      if (!hasPos(p) || !matches(p) || isOverseas(p.region)) continue;
       const el = pinEl(p, p.id === state.selected ? 'sel' : '');
       el.addEventListener('click', e => { e.stopPropagation(); if (!state.pick) select(p.id); });
       const ov = new kakao.maps.CustomOverlay({ position: LL(p.lat, p.lng), content: el, yAnchor: 1, clickable: true, zIndex: p.id === state.selected ? 100 : zOf(p) });
@@ -261,18 +279,29 @@
 
   function highlight(id) {
     overlays.forEach(({ ov, el, p }, k) => { el.classList.toggle('sel', k === id); ov.setZIndex(k === id ? 100 : zOf(p)); });
+    wmarkers.forEach(({ m, p }, k) => { m.setIcon(wIcon(p, k === id ? 'sel' : '')); m.setZIndexOffset(k === id ? 1000 : zOf(p)); });
   }
 
   function showDraftPin(d) {
     clearDraft();
     if (!hasPos(d)) return;
+    if (isOverseas(d.region) || state.world) {
+      if (wmap) wdraft = L.marker([d.lat, d.lng], { icon: wIcon(d, 'draft sel'), interactive: false, zIndexOffset: 2000 }).addTo(wmap);
+      return;
+    }
     draftOverlay = new kakao.maps.CustomOverlay({ position: LL(d.lat, d.lng), content: pinEl(d, 'draft sel'), yAnchor: 1, zIndex: 200 });
     draftOverlay.setMap(map);
   }
-  function clearDraft() { if (draftOverlay) { draftOverlay.setMap(null); draftOverlay = null; } }
+  function clearDraft() {
+    if (draftOverlay) { draftOverlay.setMap(null); draftOverlay = null; }
+    if (wdraft) { wdraft.remove(); wdraft = null; }
+  }
 
   function focusOn(p) {
-    if (!map || !hasPos(p)) return;
+    if (!hasPos(p)) return;
+    if (isOverseas(p.region)) return setWorld(true, { fit: false }).then(() => focusWorld(p));
+    if (state.world) setWorld(false);
+    if (!map) return;
     if (map.getLevel() > 5) map.setLevel(isOverseas(p.region) && p.approx ? 8 : 4);
     // 바텀시트에 가리지 않도록 살짝 아래쪽을 중심으로
     const proj = map.getProjection();
@@ -284,6 +313,7 @@
 
   // 좌표 → { region: '대전', area: '봉명동', address }
   function describeCoord(lat, lng) {
+    if (state.world) return describeWorld(lat, lng);
     const region = new Promise(res => geocoder.coord2RegionCode(lng, lat, (r, st) => {
       if (st !== kakao.maps.services.Status.OK) return res({});
       const b = r.find(x => x.region_type === 'B') || r[0];
@@ -304,6 +334,131 @@
 
   function keywordSearch(q, opts = {}) {
     return new Promise(res => placesSvc.keywordSearch(q, (data, st) => res(st === kakao.maps.services.Status.OK ? data : []), opts));
+  }
+
+  // ─────────────────────────── 해외 지도 (OpenStreetMap) ───────────────────────────
+  // 카카오맵은 해외를 그리지 않아서 해외 맛집은 Leaflet + OpenStreetMap 타일로 보여 주고,
+  // 장소 검색은 Photon(OpenStreetMap 기반, 키 없음)을 쓴다. 처음 해외를 열 때만 불러온다.
+  const COUNTRY_KO = { US: '미국', JP: '일본', VN: '베트남', CN: '중국', TW: '대만', TH: '태국', HK: '홍콩', SG: '싱가포르', PH: '필리핀', FR: '프랑스', IT: '이탈리아', ES: '스페인', GB: '영국', DE: '독일', AU: '호주', CA: '캐나다' };
+
+  function loadAsset(tag, attrs) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement(tag);
+      Object.assign(el, attrs);
+      el.onload = resolve;
+      el.onerror = () => reject(new Error('load ' + (attrs.src || attrs.href)));
+      document.head.appendChild(el);
+    });
+  }
+
+  let leafletReady;
+  function loadLeaflet() {
+    leafletReady = leafletReady || (async () => {
+      const css = href => loadAsset('link', { rel: 'stylesheet', href });
+      await Promise.all([
+        css('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'),
+        css('https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css'),
+        loadAsset('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js' }),
+      ]);
+      await loadAsset('script', { src: 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js' });
+    })();
+    return leafletReady;
+  }
+
+  async function setWorld(on, { fit = true } = {}) {
+    if (on && !wmap) {
+      try { await loadLeaflet(); } catch { leafletReady = null; toast('해외 지도를 불러오지 못했어요. 인터넷 연결을 확인해 주세요'); return; }
+    }
+    const changed = state.world !== on;
+    state.world = on;
+    document.body.classList.toggle('world', on);
+    $('#wmap').hidden = !on;
+    if (on) {
+      if (!wmap) initWorldMap();
+      wmap.invalidateSize();
+      renderWorldMarkers();
+      if (fit && changed) fitWorld();
+    }
+    renderChips();
+  }
+
+  function initWorldMap() {
+    wmap = L.map('wmap', { zoomControl: false, attributionControl: false, worldCopyJump: true, minZoom: 2 }).setView([30, 140], 3);
+    L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(wmap);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(wmap);
+    wcluster = L.markerClusterGroup({
+      showCoverageOnHover: false, maxClusterRadius: 40, spiderfyOnMaxZoom: true, disableClusteringAtZoom: 12,
+      iconCreateFunction: c => L.divIcon({ html: `<div class="wcluster">${c.getChildCount()}</div>`, className: '', iconSize: [38, 38] }),
+    });
+    wmap.addLayer(wcluster);
+    wmap.on('click', e => mapClicked(e.latlng.lat, e.latlng.lng));
+    wmap.on('zoomend', () => $('#wmap').classList.toggle('show-labels', wmap.getZoom() >= 15));
+  }
+
+  const wIcon = (p, extra = '') => L.divIcon({ html: pinEl(p, extra).outerHTML, className: 'wpin', iconSize: [34, 36], iconAnchor: [17, 36] });
+
+  function renderWorldMarkers() {
+    if (!wmap) return;
+    wcluster.clearLayers();
+    wmarkers.clear();
+    const ms = [];
+    for (const p of state.places) {
+      if (!hasPos(p) || !matches(p) || !isOverseas(p.region)) continue;
+      const m = L.marker([+p.lat, +p.lng], { icon: wIcon(p, p.id === state.selected ? 'sel' : ''), zIndexOffset: p.id === state.selected ? 1000 : zOf(p) });
+      m.on('click', () => { if (!state.pick) select(p.id); });
+      wmarkers.set(p.id, { m, p });
+      ms.push(m);
+    }
+    wcluster.addLayers(ms);
+  }
+
+  function fitWorld(list) {
+    const pts = (list || state.places.filter(p => matches(p) && isOverseas(p.region))).filter(hasPos);
+    if (!pts.length) return;
+    wmap.fitBounds(L.latLngBounds(pts.map(p => [+p.lat, +p.lng])), { padding: [70, 50], maxZoom: 14 });
+  }
+
+  function focusWorld(p) {
+    if (!wmap) return;
+    const z = Math.max(wmap.getZoom(), p.approx === 'city' ? 12 : 16);
+    const wide = window.innerWidth >= 820;
+    const pt = wmap.project([+p.lat, +p.lng], z).add(L.point(wide ? -190 : 0, wide ? 0 : Math.round(window.innerHeight * 0.22)));
+    wmap.setView(wmap.unproject(pt, z), z);
+  }
+
+  // Photon 결과 → 검색 목록 공통 형태
+  function fromPhoton(f) {
+    const pr = f.properties, [lng, lat] = f.geometry.coordinates;
+    const street = [pr.housenumber, pr.street].filter(Boolean).join(' ');
+    return {
+      id: `osm:${pr.osm_type}${pr.osm_id}`, name: pr.name || street || pr.city || '', lat, lng,
+      address: [street, pr.city || pr.county, pr.state, pr.country].filter(Boolean).join(', '),
+      sub: [pr.osm_value, pr.city || pr.state, pr.country].filter(Boolean).join(' · '),
+      cat: `${pr.osm_value || ''} ${pr.name || ''}`, country: COUNTRY_KO[pr.countrycode] || pr.country || '', city: pr.city || pr.county || pr.state || '',
+      food: /^(restaurant|fast_food|cafe|bar|pub|food_court|ice_cream|biergarten)$/.test(pr.osm_value || ''),
+    };
+  }
+
+  async function photonSearch(q, near) {
+    const c = near || (wmap ? wmap.getCenter() : null);
+    const bias = c ? `&lat=${c.lat}&lon=${c.lng}` : '';
+    try {
+      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10${bias}`);
+      return ((await r.json()).features || []).map(fromPhoton).filter(x => x.name);
+    } catch { return []; }
+  }
+
+  async function describeWorld(lat, lng) {
+    try {
+      const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`);
+      const f = ((await r.json()).features || [])[0];
+      if (!f) return { region: '', area: '', address: '' };
+      const x = fromPhoton(f);
+      return { region: x.country, area: x.city, address: x.address };
+    } catch { return { region: '', area: '', address: '' }; }
   }
 
   // ─────────────────────────── 필터 · 칩 ───────────────────────────
@@ -327,7 +482,9 @@
     const rc = countBy(p => p.rating), cc = countBy(p => p.category), gc = countBy(provinceOf);
     const regions = Object.keys(gc).sort((a, b) => (isOverseas(a) - isOverseas(b)) || gc[b] - gc[a]);
     if (f.province && !gc[f.province]) f.province = '';
+    const abroad = state.places.filter(p => isOverseas(p.region)).length;
     $('#chips').innerHTML =
+      (abroad || state.world ? `<button type="button" class="chip world${state.world ? ' on' : ''}" data-world>${state.world ? '🇰🇷 국내 지도로' : `🌏 해외 <small>${abroad}</small>`}</button>` : '') +
       RATINGS.map(r => `<button type="button" class="chip${f.ratings.includes(r.key) ? ' on' : ''}" data-rating="${r.key}">${r.label} ${r.key === 'bib' || r.key === 'wish' ? r.short : ''}<small>${rc[r.key] || 0}</small></button>`).join('') +
       `<select class="chip${f.category ? ' on' : ''}" data-f="category"><option value="">종류 전체</option>${CATEGORIES.filter(c => cc[c.key]).map(c => `<option value="${c.key}"${f.category === c.key ? ' selected' : ''}>${c.emoji} ${c.label} (${cc[c.key]})</option>`).join('')}</select>` +
       `<select class="chip${f.province ? ' on' : ''}" data-f="province"><option value="">지역 전체</option>${regions.map(r => `<option value="${esc(r)}"${f.province === r ? ' selected' : ''}>${esc(r)} (${gc[r]})</option>`).join('')}</select>` +
@@ -336,6 +493,7 @@
 
   function onChips(e) {
     const f = state.filter;
+    if (e.type === 'click' && e.target.closest('[data-world]')) { closeSheet(); return setWorld(!state.world); }
     const b = e.target.closest('[data-rating],[data-closed]');
     if (e.type === 'click' && b) {
       if (b.dataset.rating) {
@@ -353,6 +511,8 @@
 
   function zoomToRegion(province) {
     const pts = state.places.filter(p => provinceOf(p) === province && hasPos(p));
+    if (isOverseas(province)) return setWorld(true, { fit: false }).then(() => wmap && fitWorld(pts));
+    if (state.world) setWorld(false);
     if (!pts.length || !map) return;
     const b = new kakao.maps.LatLngBounds();
     pts.forEach(p => b.extend(LL(p.lat, p.lng)));
@@ -360,7 +520,7 @@
     if (map.getLevel() < 4) map.setLevel(4);
   }
 
-  function renderAll() { renderChips(); renderMarkers(); }
+  function renderAll() { renderChips(); renderMarkers(); renderWorldMarkers(); }
 
   // ─────────────────────────── 바텀시트 ───────────────────────────
   function openSheet(html, kind) {
@@ -394,7 +554,8 @@
 
   function linksFor(p) {
     if (isOverseas(p.region)) {
-      return `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.name} ${p.area}`)}">구글 지도</a>`;
+      const q = hasPos(p) && !p.approx ? `${p.name} ${p.address || ''}` : `${p.name} ${p.area}`;
+      return `<a class="btn" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q.trim())}">구글 지도</a>`;
     }
     const view = p.placeId ? `https://place.map.kakao.com/${p.placeId}` : `https://map.kakao.com/link/search/${encodeURIComponent(`${p.area.split('/')[0]} ${p.name}`)}`;
     const route = hasPos(p) ? `<a class="btn" target="_blank" rel="noopener" href="https://map.kakao.com/link/to/${encodeURIComponent(p.name)},${p.lat},${p.lng}">길찾기</a>` : '';
@@ -402,25 +563,31 @@
   }
 
   function showDetail(p) {
-    const r = ratingOf(p.rating), c = categoryOf(p.category), ys = years(p);
+    const r = ratingOf(p.rating), c = categoryOf(p.category), h = history(p);
+    const thisYear = h.find(x => x.y === THIS_YEAR);
+    let trend = '';
+    if (h.length >= 2) {
+      const d = RATING_ORDER[h[h.length - 2].r] - RATING_ORDER[h[h.length - 1].r];
+      trend = d > 0 ? ' <b class="up">⬆ 승급</b>' : d < 0 ? ' <b class="down">⬇ 강등</b>' : '';
+    }
     let notice = '';
     if (!canEdit()) notice = '';
     else if (!hasPos(p)) notice = `<div class="notice"><span>📍 아직 지도 위치가 없어요</span><button class="btn small" data-act="find">이름으로 찾기</button><button class="btn small" data-act="move">지도에서 지정</button></div>`;
     else if (p.approx === 'auto') notice = `<div class="notice"><span>📍 자동으로 찾은 위치예요. 맞나요?</span><button class="btn small" data-act="confirm">맞아요</button><button class="btn small" data-act="find">다시 찾기</button></div>`;
-    else if (p.approx === 'city') notice = `<div class="notice"><span>📍 도시 중심에 대략 표시돼 있어요</span><button class="btn small" data-act="move">지도에서 지정</button></div>`;
+    else if (p.approx === 'city') notice = `<div class="notice"><span>📍 도시 중심에 대략 표시돼 있어요</span><button class="btn small" data-act="find">이름으로 찾기</button><button class="btn small" data-act="move">지도에서 지정</button></div>`;
 
     openSheet(`
       <div class="detail">
-        <div class="d-rating r-${p.rating}">${r.label}<span>${esc(r.desc)}</span></div>
+        <div class="d-rating r-${p.rating}">${r.label}<span>${esc(r.desc)}</span>${trend}</div>
         <h2>${c.emoji} ${esc(p.name)} ${p.closed ? '<span class="badge">폐업</span>' : ''}</h2>
         ${p.menu ? `<p class="d-menu">${esc(p.menu)}</p>` : ''}
         <p class="d-meta">${esc(p.region)} ${esc(p.area)} · ${c.label}${p.address ? `<br>${esc(p.address)}` : ''}</p>
-        ${ys.length ? `<div class="d-years">${ys.map(y => `<span>'${y}</span>`).join('')}</div>` : ''}
+        ${h.length ? `<div class="d-years">${h.map(x => `<span class="r-${x.r}" title="${esc(ratingOf(x.r).desc)}">'${x.y} ${ratingOf(x.r).label}</span>`).join('')}</div>` : ''}
         ${p.memo ? `<p class="d-memo">${esc(p.memo)}</p>` : ''}
         ${notice}
         <div class="actions">
           ${canEdit() ? '<button class="btn primary" data-act="edit">편집</button>' : ''}
-          ${canEdit() && !ys.includes(THIS_YEAR) && !p.closed ? `<button class="btn" data-act="visit">올해도 갔어요 +'${THIS_YEAR}</button>` : ''}
+          ${canEdit() && !p.closed ? `<button class="btn" data-act="rate">'${THIS_YEAR} 평가 ${thisYear ? '바꾸기' : '남기기'}</button>` : ''}
           ${linksFor(p)}
         </div>
       </div>`, 'detail');
@@ -429,16 +596,46 @@
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (!act) return;
       if (act === 'edit') showForm({ ...p }, false);
-      if (act === 'visit') { savePlace({ ...p, years: [...ys, THIS_YEAR].join(' '), rating: p.rating === 'wish' ? 'bib' : p.rating }); select(p.id, { pan: false }); toast(`'${THIS_YEAR} 방문 추가`); }
+      if (act === 'rate') showRate(p);
       if (act === 'confirm') { savePlace({ ...p, approx: '' }); select(p.id, { pan: false }); }
       if (act === 'find') startAssignSearch(p);
       if (act === 'move') {
+        if (isOverseas(p.region) !== state.world) setWorld(isOverseas(p.region), { fit: false }).then(() => focusOn(p));
         startPick(`'${p.name}' 위치를 지도에서 탭하세요`, async (lat, lng) => {
           const info = await describeCoord(lat, lng);
-          savePlace({ ...p, lat, lng, approx: '', address: isOverseas(p.region) ? p.address : info.address });
+          savePlace({ ...p, lat, lng, approx: '', address: info.address || p.address });
           select(p.id, { pan: false });
         }, () => select(p.id, { pan: false }));
       }
+    };
+  }
+
+  // 올해 등급 고르기
+  function showRate(p) {
+    const h = history(p);
+    const cur = (h.find(x => x.y === THIS_YEAR) || {}).r;
+    const prev = h.filter(x => x.y !== THIS_YEAR).slice(-1)[0];
+    openSheet(`
+      <h3>${esc(p.name)} · '${THIS_YEAR} 평가</h3>
+      <p class="d-meta">${prev ? `지난 등급: '${prev.y} ${ratingOf(prev.r).label} ${esc(ratingOf(prev.r).desc)}` : '처음 남기는 평가예요'}</p>
+      <div class="rate-opts">${RATED.map(o => `
+        <button type="button" class="rate-opt r-${o.key}${cur === o.key ? ' on' : ''}" data-r="${o.key}"><b>${o.label}</b><span>${esc(o.desc)}</span></button>`).join('')}
+      </div>
+      <div class="form-actions">
+        ${cur ? '<button type="button" class="btn danger" data-act="unrate">올해 평가 지우기</button>' : ''}
+        <button type="button" class="btn primary" data-act="back">취소</button>
+      </div>`, 'rate');
+    $('#sheetBody').onclick = e => {
+      const b = e.target.closest('[data-r]');
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (b) {
+        const next = h.filter(x => x.y !== THIS_YEAR).concat({ y: THIS_YEAR, r: b.dataset.r }).sort((a, z) => a.y.localeCompare(z.y));
+        savePlace(withHistory(p, next));
+        toast(`'${THIS_YEAR} ${ratingOf(b.dataset.r).label} 평가를 남겼어요`);
+        return select(p.id, { pan: false });
+      }
+      if (act === 'unrate') { savePlace(withHistory(p, h.filter(x => x.y !== THIS_YEAR))); return select(p.id, { pan: false }); }
+      if (act === 'back') select(p.id, { pan: false });
     };
   }
 
@@ -450,13 +647,14 @@
       <form class="form" id="placeForm">
         <h3>${isNew ? '맛집 추가' : '맛집 편집'}</h3>
         <label class="field"><span>가게 이름</span><input name="name" value="${esc(d.name)}" required placeholder="예) 담박집"></label>
-        <div class="field"><span>등급</span><div class="seg">
-          ${RATINGS.map(r => `<label><input type="radio" name="rating" value="${r.key}"${d.rating === r.key ? ' checked' : ''}><span>${r.label}${r.key === 'bib' || r.key === 'wish' ? ' ' + r.short : ''}</span></label>`).join('')}
-        </div></div>
+        <div class="field"><span>연도별 등급 <small>· 그 해에 받은 등급, 지도에는 가장 최근 등급이 표시돼요</small></span>
+          <div id="hist">${history(d).map(histRow).join('')}</div>
+          <button type="button" class="btn small" data-act="addyear">+ 연도 추가</button>
+          <p class="hint">하나도 없으면 🔖 가볼곳으로 저장돼요</p>
+        </div>
         <label class="field"><span>대표 메뉴</span><input name="menu" value="${esc(d.menu)}" placeholder="예) 로스/히레카츠"></label>
-        <div class="row2">
+        <div>
           <label class="field"><span>종류</span><select name="category">${CATEGORIES.map(c => `<option value="${c.key}"${d.category === c.key ? ' selected' : ''}>${c.emoji} ${c.label}</option>`).join('')}</select></label>
-          <label class="field"><span>방문 연도</span><input name="years" value="${esc(d.years)}" placeholder="23 24 25" inputmode="numeric"></label>
         </div>
         <div class="row2">
           <label class="field"><span>지역</span><input name="region" value="${esc(d.region)}" placeholder="대전"></label>
@@ -475,10 +673,14 @@
     const form = $('#placeForm');
     const read = () => {
       const fd = new FormData(form);
-      Object.assign(d, {
-        name: fd.get('name').trim(), rating: fd.get('rating') || 'bib', menu: fd.get('menu').trim(), category: fd.get('category'),
-        years: (fd.get('years').match(/\d{2}/g) || []).join(' '), region: fd.get('region').trim(), area: fd.get('area').trim(),
-        memo: fd.get('memo').trim(), closed: fd.get('closed') === 'on',
+      const h = {};
+      form.querySelectorAll('.hrow').forEach(row => {
+        const y = (row.querySelector('.hy').value.match(/\d{2}$/) || [])[0];
+        if (y) h[y] = row.querySelector('.hr').value;
+      });
+      Object.assign(d, withHistory(d, Object.keys(h).sort().map(y => ({ y, r: h[y] }))), {
+        name: fd.get('name').trim(), menu: fd.get('menu').trim(), category: fd.get('category'),
+        region: fd.get('region').trim(), area: fd.get('area').trim(), memo: fd.get('memo').trim(), closed: fd.get('closed') === 'on',
       });
       return d;
     };
@@ -496,13 +698,21 @@
     };
     form.onclick = e => {
       const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'addyear') {
+        const ys = [...form.querySelectorAll('.hy')].map(i => i.value);
+        const last = form.querySelector('.hrow:last-child .hr');
+        let y = +THIS_YEAR;
+        while (ys.includes(String(y).padStart(2, '0')) && y > 0) y--;
+        $('#hist').insertAdjacentHTML('beforeend', histRow({ y: String(y).padStart(2, '0'), r: last ? last.value : 'bib' }));
+      }
+      if (act === 'delyear') e.target.closest('.hrow').remove();
       if (act === 'cancel') { clearDraft(); isNew ? closeSheet() : select(d.id, { pan: false }); }
       if (act === 'delete' && confirm(`'${d.name}'을(를) 삭제할까요?`)) { deletePlace(d.id); closeSheet(); toast('삭제했어요'); }
       if (act === 'move') {
         read();
         startPick('새 위치를 지도에서 탭하세요', async (lat, lng) => {
           const info = await describeCoord(lat, lng);
-          Object.assign(d, { lat, lng, approx: '', address: isOverseas(d.region) ? d.address : info.address });
+          Object.assign(d, { lat, lng, approx: '', address: info.address || d.address });
           if (!d.region) d.region = info.region;
           if (!d.area) d.area = info.area;
           showDraftPin(d);
@@ -511,6 +721,10 @@
       }
     };
   }
+
+  const histRow = x => `<div class="hrow"><span>'</span><input class="hy" value="${esc(x.y)}" inputmode="numeric" maxlength="2" aria-label="연도">
+    <select class="hr" aria-label="등급">${RATED.map(o => `<option value="${o.key}"${x.r === o.key ? ' selected' : ''}>${o.label} ${o.short}</option>`).join('')}</select>
+    <button type="button" class="icon-btn" data-act="delyear" aria-label="이 연도 삭제">✕</button></div>`;
 
   // ─────────────────────────── 지도 탭으로 위치 고르기 ───────────────────────────
   function startPick(msg, cb, onCancel) {
@@ -529,13 +743,13 @@
 
   function startAdd() {
     closeSheet();
-    startPick('추가할 가게 위치를 지도에서 탭하세요 · 위 검색창에 가게 이름을 검색해도 돼요', async (lat, lng) => {
+    startPick(`추가할 가게 위치를 ${state.world ? '해외 ' : ''}지도에서 탭하세요 · 위 검색창에 가게 이름을 검색해도 돼요`, async (lat, lng) => {
       const info = await describeCoord(lat, lng);
       showForm(blank({ lat, lng, ...info }), true);
     });
   }
 
-  const blank = extra => ({ id: newId(), name: '', rating: 'bib', category: 'etc', region: '', area: '', menu: '', years: THIS_YEAR, closed: false, lat: null, lng: null, address: '', placeId: '', approx: '', memo: '', ...extra });
+  const blank = extra => ({ id: newId(), name: '', rating: 'bib', category: 'etc', region: '', area: '', menu: '', years: `${THIS_YEAR}:bib`, closed: false, lat: null, lng: null, address: '', placeId: '', approx: '', memo: '', ...extra });
 
   // ─────────────────────────── 검색 ───────────────────────────
   function localMatches(q) {
@@ -554,42 +768,55 @@
       <div class="rt">${r.label}</div></li>`;
   }
 
+  const fromKakao = r => ({
+    id: r.id, name: r.place_name, lat: +r.y, lng: +r.x, address: r.road_address_name || r.address_name,
+    sub: `${r.category_name.split(' > ').slice(1).join(' › ') || r.category_group_name} · ${r.road_address_name || r.address_name}`,
+    cat: `${r.category_name} ${r.place_name}`,
+  });
+
   async function doSearch(q) {
     q = q.trim();
     if (!q) return;
     endPick();
     $('#q').blur();
     const assign = state.assignTo && byId(state.assignTo);
+    const world = assign ? isOverseas(assign.region) : state.world;
     const mine = assign ? [] : localMatches(q);
-    const opts = map ? { location: map.getCenter() } : {};
-    const kakaoRes = map && canEdit() ? await keywordSearch(q, opts) : [];
+    let results = [];
+    if (canEdit()) {
+      if (world) {
+        const c = assign && cityCoord(assign.area);
+        results = await photonSearch(q, c ? { lat: c[0], lng: c[1] } : null);
+      } else if (map) results = (await keywordSearch(q, { location: map.getCenter() })).map(fromKakao);
+    }
     const saved = new Map(state.places.filter(p => p.placeId).map(p => [p.placeId, p]));
+    const source = world ? '해외 장소 (OpenStreetMap)' : '카카오맵 장소';
+    const hint = world ? '영어나 현지어 이름으로 검색해 보세요. 못 찾으면 해외 지도에서 직접 탭해서 지정하면 돼요' : '동네 이름을 붙여 보세요 (예: "효자동 담박집")';
 
     openSheet(`
       ${assign ? `<h3>'${esc(assign.name)}' 위치 고르기</h3>` : `<h3>'${esc(q)}' 검색</h3>`}
       ${mine.length ? `<p class="sec-title">내 맛집 ${mine.length}</p><ul class="items" data-sec="mine">${mine.map(itemHtml).join('')}</ul>` : ''}
-      ${!canEdit() ? (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>') : `<p class="sec-title">카카오맵 장소 ${kakaoRes.length}</p>
-      ${kakaoRes.length ? `<ul class="items" data-sec="kakao">${kakaoRes.map((r, i) => `
+      ${!canEdit() ? (mine.length ? '' : '<p class="empty">찾는 맛집이 없어요</p>') : `<p class="sec-title">${source} ${results.length}</p>
+      ${results.length ? `<ul class="items" data-sec="places">${results.map((r, i) => `
         <li data-i="${i}"><div class="em">${saved.has(r.id) ? '✅' : '📍'}</div>
-          <div class="tx"><div class="nm">${esc(r.place_name)}</div><div class="sb">${esc(r.category_name.split(' > ').slice(1).join(' › ') || r.category_group_name)} · ${esc(r.road_address_name || r.address_name)}</div></div>
+          <div class="tx"><div class="nm">${esc(r.name)}</div><div class="sb">${esc(r.sub)}</div></div>
           <div class="rt">${saved.has(r.id) ? '저장됨' : (assign ? '선택' : '추가')}</div></li>`).join('')}</ul>`
-        : `<p class="empty">결과가 없어요. 동네 이름을 붙여 보세요 (예: "효자동 담박집")</p>`}`}`, 'search');
+        : `<p class="empty">결과가 없어요. ${hint}</p>`}`}`, 'search');
 
     $('#sheetBody').onclick = async e => {
       const li = e.target.closest('li');
       if (!li) return;
       if (li.dataset.id) return select(li.dataset.id);
-      const r = kakaoRes[+li.dataset.i];
-      const lat = +r.y, lng = +r.x, address = r.road_address_name || r.address_name;
+      const r = results[+li.dataset.i];
       if (assign) {
         state.assignTo = null;
-        savePlace({ ...assign, lat, lng, address, placeId: r.id, approx: '' });
+        savePlace({ ...assign, lat: r.lat, lng: r.lng, address: r.address, placeId: r.id, approx: '' });
         return select(assign.id);
       }
       if (saved.has(r.id)) return select(saved.get(r.id).id);
-      const info = await describeCoord(lat, lng);
-      const d = blank({ name: r.place_name, category: guessCategory(`${r.category_name} ${r.place_name}`), region: info.region, area: info.area, address, placeId: r.id, lat, lng });
-      map.setLevel(4);
+      const info = world ? { region: r.country, area: r.city } : await describeCoord(r.lat, r.lng);
+      const d = blank({ name: r.name, category: guessCategory(r.cat), region: info.region, area: info.area, address: r.address, placeId: r.id, lat: r.lat, lng: r.lng });
+      if (!world) map.setLevel(4);
       focusOn(d);
       showForm(d, true);
     };
@@ -597,7 +824,7 @@
 
   function startAssignSearch(p) {
     state.assignTo = p.id;
-    const q = `${p.area.split('/')[0]} ${p.name}`.trim();
+    const q = isOverseas(p.region) ? p.name : `${p.area.split('/')[0]} ${p.name}`.trim();
     $('#q').value = q;
     doSearch(q);
   }
@@ -620,11 +847,11 @@
       if (s === 'recent') return lastYear(b).localeCompare(lastYear(a)) || (RATING_ORDER[a.rating] - RATING_ORDER[b.rating]);
       return (a.closed - b.closed) || (RATING_ORDER[a.rating] - RATING_ORDER[b.rating]) || a.region.localeCompare(b.region) || a.name.localeCompare(b.name);
     });
-    const noPos = state.places.filter(p => !hasPos(p)).length;
+    const noPos = state.places.filter(needsLocate).length;
     openSheet(`
       <div class="list-head"><h3>내 맛집 ${list.length}곳</h3>
-        <div class="sorts">${[['rating', '등급순'], ['recent', '최근 방문'], ['dist', '가까운 순']].map(([k, l]) => `<button data-sort="${k}" class="${s === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      ${noPos && canEdit() ? `<div class="notice"><span>📍 위치가 없는 곳이 ${noPos}곳 있어요</span><button class="btn small" data-act="autolocate">자동으로 찾기</button></div>` : ''}
+        <div class="sorts">${[['rating', '등급순'], ['recent', '최근 평가'], ['dist', '가까운 순']].map(([k, l]) => `<button data-sort="${k}" class="${s === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      ${noPos && canEdit() ? `<div class="notice"><span>📍 정확한 위치가 없는 곳이 ${noPos}곳 있어요</span><button class="btn small" data-act="autolocate">자동으로 찾기</button></div>` : ''}
       ${list.length ? `<ul class="items">${list.map(itemHtml).join('')}</ul>` : `<p class="empty">조건에 맞는 맛집이 없어요</p>`}`, 'list');
 
     $('#sheetBody').onclick = e => {
@@ -646,6 +873,13 @@
     if (!navigator.geolocation) return toast('이 브라우저는 위치를 지원하지 않아요');
     navigator.geolocation.getCurrentPosition(pos => {
       state.myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      if (state.world && wmap) {
+        const at = [state.myPos.lat, state.myPos.lng];
+        if (!wme) wme = L.marker(at, { icon: L.divIcon({ html: '<div class="me"></div>', className: 'wpin', iconSize: [22, 22] }), interactive: false, zIndexOffset: 3000 }).addTo(wmap);
+        else wme.setLatLng(at);
+        if (typeof then === 'function') then(); else wmap.setView(at, 15);
+        return;
+      }
       const ll = LL(state.myPos.lat, state.myPos.lng);
       if (!meOverlay) {
         const el = document.createElement('div');
@@ -659,14 +893,26 @@
   }
 
   // ─────────────────────────── 위치 자동 찾기 ───────────────────────────
+  // 국내는 위치가 없는 곳, 해외는 위치가 없거나 도시 중심에 대략 찍힌 곳
+  const needsLocate = p => isOverseas(p.region) ? (!hasPos(p) || p.approx === 'city') : !hasPos(p);
   async function autoLocate() {
-    const todo = state.places.filter(p => !hasPos(p) && !isOverseas(p.region));
+    const todo = state.places.filter(needsLocate);
     if (!todo.length) return toast('위치를 찾을 곳이 없어요');
     if (!map) return toast('지도가 준비되지 않았어요');
     const found = [], failed = [];
     for (let i = 0; i < todo.length; i++) {
       const p = todo[i];
       toast(`위치 찾는 중… ${i + 1}/${todo.length}`, 60000);
+      if (isOverseas(p.region)) {
+        // 도시 중심에서 50km 안의 결과만 인정 (같은 이름의 엉뚱한 곳 방지)
+        const c = cityCoord(p.area) || [+p.lat, +p.lng];
+        const near = (await photonSearch(p.name, { lat: c[0], lng: c[1] })).filter(r => distKm({ lat: c[0], lng: c[1] }, r) < 50);
+        const pick = near.find(r => r.food) || near[0];
+        if (pick) found.push({ ...p, lat: pick.lat, lng: pick.lng, address: pick.address, placeId: pick.id, approx: 'auto' });
+        else failed.push(p.name);
+        await sleep(300);
+        continue;
+      }
       const area = p.area.split('/')[0];
       const inRegion = r => (r.address_name || '').includes(p.region);
       const isFood = r => /^(FD6|CE7)$/.test(r.category_group_code);
@@ -679,7 +925,7 @@
     }
     if (found.length) savePlaces(found);
     toast(`${found.length}곳 위치를 찾았어요${failed.length ? ` · 못 찾음 ${failed.length}곳` : ''}`, 4000);
-    if (found.length) fitAll();
+    if (found.length && !state.world) fitAll();
     if ($('#sheet').dataset.kind === 'list') showList();
     if (failed.length) console.info('위치를 못 찾은 곳:', failed);
   }
@@ -694,7 +940,7 @@
   const closeModal = () => $('#modal').close();
 
   function openSettings(first = false) {
-    const noPos = state.places.filter(p => !hasPos(p) && !isOverseas(p.region)).length;
+    const noPos = state.places.filter(needsLocate).length;
     const status = cfg.apiUrl ? (canEdit() ? '구글 시트 연동 중 · 편집 가능' : '공유받은 지도 · 보기 전용') : '로컬 모드 (이 기기에만 저장)';
     const editor = canEdit();
     openModal(`
@@ -709,7 +955,7 @@
       <hr>
       <div class="stack">
         ${editor ? '<button class="btn" data-act="import">📋 메모장 내용 가져오기</button>' : ''}
-        ${noPos && editor ? `<button class="btn" data-act="autolocate">📍 위치 없는 ${noPos}곳 자동으로 찾기</button>` : ''}
+        ${noPos && editor ? `<button class="btn" data-act="autolocate">📍 정확한 위치가 없는 ${noPos}곳 자동으로 찾기</button>` : ''}
         ${cfg.apiUrl ? '<button class="btn" data-act="pull">🔄 시트에서 다시 불러오기</button>' : ''}
         ${cfg.apiUrl && editor ? '<button class="btn" data-act="share-edit">✏️ 편집용 링크 복사 <small>— 배우자처럼 같이 고칠 사람</small></button>' : ''}
         ${cfg.apiUrl && (cfg.viewToken || !editor) ? '<button class="btn" data-act="share-view">👀 보기 전용 링크 복사 <small>— 구경만 할 친구</small></button>' : ''}
